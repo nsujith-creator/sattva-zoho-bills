@@ -427,11 +427,21 @@ def check_overseas_skips_reconcile():
 
 
 def check_a1_f10():
-    src = (SRC / "zoho_bills.py").read_text(encoding="utf-8")
-    body = re.search(r"def t_watcher_scope_deferred\(\):\s*\n\s*(.+)", src).group(1).strip()
-    record("A1", "DEFECT" if body == "assert True" else "INFO",
-           "The 'known open' watcher_lock_scope self-test is a placeholder that always passes",
-           f"t_watcher_scope_deferred body: {body!r}; counted in 'SUMMARY: PASS 31'")
+    import subprocess
+    runner = ROOT / "tests" / "test_real_watcher_lock.py"
+    if sys.platform != "win32":
+        record("A1", "INFO", "OS-level lock requires Windows",
+               "SKIPPED: run the contention test on a Windows computer")
+    elif not runner.is_file():
+        record("A1", "DEFECT", "Real watcher lock test missing", str(runner))
+    else:
+        proc = subprocess.run([sys.executable, str(runner)], cwd=str(ROOT),
+                              capture_output=True, text=True, timeout=45)
+        combined = (proc.stdout + proc.stderr)[-1800:]
+        ok = proc.returncode == 0 and "Ran 2 tests" in combined and "OK" in combined
+        record("A1", "FAIL-SAFE" if ok else "DEFECT",
+               "Two concurrent Windows watchers must never both acquire the lock",
+               f"exit={proc.returncode}; {combined}")
     w = (SRC / "watcher.py").read_text(encoding="utf-8")
     main_block = w[w.index('if __name__ == "__main__":'):]
     gate_off = "# enforce_test_gate() disabled" in main_block and \

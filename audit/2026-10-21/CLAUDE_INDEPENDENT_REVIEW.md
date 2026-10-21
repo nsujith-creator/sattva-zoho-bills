@@ -139,3 +139,25 @@
 - **PDFs needed:** the list of source PDFs to upload.
 
 Upload that JSON and those PDFs to the review session, without committing either. Every posted bill then gets a field-by-field comparison against its PDF. One limit remains: `invoice_log.json` retains only 500 entries (F12), so bills older than that window need a Zoho-side date-range pass.
+
+## 7. Updates after version 2
+
+- **A7 is not active.** Checked on the Windows machine on 21 Oct:
+  - `C:\sattva\books_recon\.env` does not exist, and no override variables are set in the process, user or machine environment.
+  - Of 3,907 authentication log entries, 3,881 use the legacy config path and 26 an older inline loader aligned with it.
+
+  A7 is now **S3, latent**: a future `.env` with SANDBOX or READ keys would still redirect posting silently.
+- **F11 is confirmed in production.** `pdftotext` is not installed on the Windows machine, so the MBL regex and the CMA CGM invoice-number override have been inert.
+- **The read-only export ran** (exit 0, legacy config):
+  - 1,160 Zoho bills listed.
+  - 97 invoice_log entries checked, all matched to a Zoho bill by number.
+  - 80 bill details fetched, with 0 errors.
+  - All 60 PDFs it lists are present in `C:\temp\bills`.
+
+  Matching is by number only, so PDF-to-Zoho parity (F20) is still open.
+- **F03 and F04 are fixed.**
+  - Posting now requires a recorded approval bound to the reviewed payload.
+  - `verified` is the only success status.
+
+  `repro/reproduce_findings.py` reports both as FAIL-SAFE, and `tests/test_approval_boundary.py` covers the AGENTS.md cases.
+

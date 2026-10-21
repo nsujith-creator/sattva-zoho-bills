@@ -379,7 +379,7 @@ def hsn_outcome(code):
 def check_f07():
     seven = hsn_outcome("1234567")
     ten = hsn_outcome("9965110000")
-    record("F07", "FAIL-SAFE" if all(x.startswith("held for review (hsn_or_sac_invalid:") for x in (seven, ten)) else "DEFECT",
+    record("F07", "FAIL-SAFE" if all(str(x).startswith("held for review (hsn_or_sac_invalid:") for x in (seven, ten)) else "DEFECT",
            "Invalid HSN/SAC is silently dropped or truncated instead of routed to review",
            f"7-digit '1234567' -> {seven!r}; 10-digit '9965110000' -> {ten!r}")
 

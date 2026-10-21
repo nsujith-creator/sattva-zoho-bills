@@ -1,0 +1,13 @@
+# Never commit credentials, raw invoices or runtime state (audit acceptance criterion 8)
+config.json
+.env
+*.env
+*token*
+*.pdf
+*.PDF
+parsed_cache.json
+invoice_log.json
+seen_files.json
+pending_files.json
+run_log.json
+__pycache__/

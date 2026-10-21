@@ -1,0 +1,4 @@
+# Keep audited source byte-exact so SHA-256 fingerprints survive a commit from Windows
+*.py -text
+*.json -text
+*.csv -text

@@ -379,7 +379,7 @@ def hsn_outcome(code):
 def check_f07():
     seven = hsn_outcome("1234567")
     ten = hsn_outcome("9965110000")
-    record("F07", "DEFECT" if seven is None or ten == "99651100" else "FAIL-SAFE",
+    record("F07", "FAIL-SAFE" if all(x.startswith("held for review (hsn_or_sac_invalid:") for x in (seven, ten)) else "DEFECT",
            "Invalid HSN/SAC is silently dropped or truncated instead of routed to review",
            f"7-digit '1234567' -> {seven!r}; 10-digit '9965110000' -> {ten!r}")
 
@@ -412,7 +412,7 @@ def check_f08():
     main_src = inspect.getsource(zb.main)
     uses_today = "get_usd_to_inr()" in main_src
     opt_in = '"--use-invoice-date-fx" in args' in main_src
-    record("F08", "DEFECT" if uses_today or opt_in or rate == 83.0 else "FAIL-SAFE",
+    record("F08", "DEFECT" if uses_today or opt_in or rate is not None else "FAIL-SAFE",
            "Watcher runs use the processing-day USD rate, not the invoice-date rate",
            f"main() fetches today's rate={uses_today}; invoice-date rate is opt-in={opt_in}; "
            f"failed invoice-date fetch -> rate={rate} (None = bill held for review)")

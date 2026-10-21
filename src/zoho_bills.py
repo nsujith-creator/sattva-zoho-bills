@@ -185,7 +185,9 @@ def fetch_tax_ids_from_zoho(tax_rules, run_id="unset"):
 
 
 # ── Session 5: AI cost controls ──────────────────────────────────────────────
-_PARSER_VERSION       = 6
+# 7: multi-invoice PDFs are held whole (audit F06). Version-6 entries may hold
+# only one invoice of several, so they must be re-parsed.
+_PARSER_VERSION       = 7
 _AI_VENDOR_TOP_N      = 5
 _AI_PROMPT_CHAR_LIMIT = 6000
 
@@ -469,9 +471,10 @@ def _load_parse_cache(run_id="unset"):
         obs_print("STATE_RECOVERY",
                   f"run_id={run_id} file=parsed_cache.json reason={err} action=start_empty")
         return {}
-    # Filter invalid entries
+    # Filter invalid entries. A held multi-invoice PDF keeps its bill numbers
+    # inside "invoices" (audit F06).
     valid = {k: v for k, v in data.items()
-             if isinstance(v, dict) and v.get("bill_number")}
+             if isinstance(v, dict) and (v.get("bill_number") or isinstance(v.get("invoices"), list))}
     dropped = len(data) - len(valid)
     if dropped:
         obs_print("STATE_RECOVERY",
@@ -1451,15 +1454,16 @@ def parse_pdf_with_claude_once(filepath, filename, vendors_list):
     # one and drop the rest (audit F06): hold the whole PDF for review with every
     # invoice preserved, including in the parse cache.
     if isinstance(result, list):
-        valid = [r for r in result if isinstance(r, dict)]
-        if len(valid) == 1:
-            result = valid[0]
-        elif valid:
+        if len(result) == 1 and isinstance(result[0], dict):
+            result = result[0]
+        elif result:
+            # Malformed elements are kept too: one valid invoice plus junk is held.
+            invoices = [r if isinstance(r, dict) else {"unparsed": str(r)[:200]} for r in result]
             obs_print("PARSE_MULTI_INVOICE",
                       f"run_id={_run_id_ctx} file={filename} reason=multi_invoice_pdf "
-                      f"count={len(valid)} action=hold_for_review")
-            result = {"confidence": "low", "multi_invoice_count": len(valid), "invoices": valid,
-                      "issues": f"multi_invoice_pdf:{len(valid)}"}
+                      f"count={len(invoices)} action=hold_for_review")
+            result = {"confidence": "low", "multi_invoice_count": len(invoices), "invoices": invoices,
+                      "issues": f"multi_invoice_pdf:{len(invoices)}"}
         else:
             result = {"confidence": "low", "issues": "claude_returned_empty_array"}
     result["_vendor_context_count"] = len(shortlist)
@@ -1514,16 +1518,16 @@ def determine_overseas_status(parsed, matched_vendor_name):
     vname    = f" {_normalize_name(matched_vendor_name or '')} "
     vendor_overseas = any(f" {_normalize_name(sig)} " in vname
                           for sig in _OVERSEAS_VENDOR_SIGNALS if _normalize_name(sig))
-    # Vendor name match is decisive here: known overseas vendors are overseas
-    # regardless of AI flag or currency (INR billing is common for RCM invoices).
-    # determine_tax_route() still holds an Indian-GSTIN vendor for review.
-    if vendor_overseas:
-        return True
     currency_signal = currency not in ("INR", "")
     signals_true  = sum([ai_flag is True, currency_signal])
     signals_false = sum([ai_flag is False, not currency_signal])
     if signals_true >= 1:
         return True
+    if vendor_overseas:
+        # A vendor-name match alone never decides reverse charge (audit A5): a
+        # domestic contact such as "AWS LOGISTICS" with an INR invoice goes to
+        # review. determine_tax_route() also holds any Indian-GSTIN vendor.
+        return None
     if signals_false >= 2:
         return False
     return None
@@ -2748,11 +2752,16 @@ def _business_test():
             try:
                 _OVERSEAS_VENDOR_SIGNALS.update({"ADOBE", "ANTHROPIC"})
                 assert determine_overseas_status(
-                    parsed_base(vendor_name="ADOBE IRELAND", is_overseas=False,
+                    parsed_base(vendor_name="ADOBE IRELAND", is_overseas=True,
                                 currency_code="INR"),
                     "ADOBE IRELAND") is True
+                # Audit A5: a name match alone goes to review, not reverse charge.
                 assert determine_overseas_status(
-                    parsed_base(vendor_name="ANTHROPIC", currency_code="INR"),
+                    parsed_base(vendor_name="ADOBE IRELAND", is_overseas=False,
+                                currency_code="INR"),
+                    "ADOBE IRELAND") is None
+                assert determine_overseas_status(
+                    parsed_base(vendor_name="ANTHROPIC", currency_code="USD"),
                     "ANTHROPIC") is True
                 assert determine_overseas_status(
                     parsed_base(vendor_name="LOCAL SUPPLIER", is_overseas=False,
@@ -2770,9 +2779,9 @@ def _business_test():
                     parsed_base(is_overseas=False, currency_code="INR"),
                     "DAWSON LOGISTICS PVT LTD") is False
                 assert determine_overseas_status(
-                    parsed_base(is_overseas=False, currency_code="INR"), "AWS EUROPE") is True
+                    parsed_base(is_overseas=False, currency_code="INR"), "AWS EUROPE") is None
                 assert determine_overseas_status(
-                    parsed_base(is_overseas=False, currency_code="INR"),
+                    parsed_base(is_overseas=True, currency_code="INR"),
                     "Amazon Web Services EMEA SARL") is True
             finally:
                 _OVERSEAS_VENDOR_SIGNALS.clear()
@@ -3131,7 +3140,7 @@ def _business_test():
             assert validate_before_post(discount_bill, "V1") is None
 
         def t_cache_behavior():
-            assert _PARSER_VERSION == 6
+            assert _PARSER_VERSION == 7
             file_hash = "abc123"
             valid = _make_cache_entry(parsed_base(), file_hash, vendor_context_count=2)
             assert _cache_lookup({file_hash: {"bill_number": "INV123"}}, file_hash) is None

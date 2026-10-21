@@ -42,6 +42,15 @@ class TaxRouteTests(unittest.TestCase):
             "DAWSON LOGISTICS PVT LTD", "27AAAAA0000A1Z5")
         self.assertEqual(route["tax_mode"], "cgst_sgst")
 
+    def test_name_signal_alone_goes_to_review(self):
+        # A domestic contact with no GSTIN whose name contains an overseas signal word.
+        route = zb.determine_tax_route(
+            {"is_overseas": False, "currency_code": "INR", "line_items": [], "notes": "",
+             "tax_amount_igst": 0, "tax_amount_cgst": 0, "tax_amount_sgst": 0},
+            "AWS LOGISTICS", "")
+        self.assertEqual((route["tax_mode"], route["review_required"]), ("unknown", True))
+        self.assertEqual(route["review_reason"], "ambiguous_overseas_status")
+
     def test_foreign_vendor_without_indian_gstin_stays_reverse_charge(self):
         route = zb.determine_tax_route(
             {"is_overseas": True, "currency_code": "USD", "line_items": [], "notes": "",
@@ -104,6 +113,24 @@ class MultiInvoiceTests(unittest.TestCase):
         self.assertEqual(log["awaiting_approval"], [])
         self.assertEqual(log["needs_review"][0]["reason"],
                          f"multi_invoice_pdf:2:{BILL_NUMBER},PLATFORM-FEE-1")
+
+    def test_one_valid_invoice_plus_malformed_entry_is_held(self):
+        result = self.parse([approvable_invoice(), "not an invoice"])
+        self.assertEqual(result["multi_invoice_count"], 2)
+        self.assertEqual(result["invoices"][1], {"unparsed": "not an invoice"})
+
+    def test_held_pdf_survives_cache_reload_and_old_entries_are_reparsed(self):
+        held = zb._make_cache_entry({"confidence": "low", "multi_invoice_count": 2,
+                                     "invoices": [{"bill_number": "A"}, {"bill_number": "B"}]}, "held")
+        legacy = zb._make_cache_entry(approvable_invoice(), "legacy")
+        legacy["_parser_version"] = 6  # may hold one invoice of several
+        with tempfile.TemporaryDirectory(prefix="zoho-multi-test-") as tmp:
+            cache_path = os.path.join(tmp, "parsed_cache.json")
+            Path(cache_path).write_text(json.dumps({"held": held, "legacy": legacy}), encoding="utf-8")
+            with patch.object(zb, "CACHE_PATH", cache_path), contextlib.redirect_stdout(io.StringIO()):
+                loaded = zb._load_parse_cache()
+        self.assertEqual(len(zb._cache_lookup(loaded, "held")["invoices"]), 2)
+        self.assertIsNone(zb._cache_lookup(loaded, "legacy"))
 
     def test_single_element_list_is_a_normal_invoice(self):
         result = self.parse([approvable_invoice()])

@@ -17,7 +17,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_vendor_matching import MAERSK_ID, approvable_invoice, run_pipeline, zb
+from test_vendor_matching import GSTIN, MAERSK_ID, approvable_invoice, run_pipeline, zb
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 APPROVER = "Test Approver"
@@ -29,10 +29,14 @@ _spec.loader.exec_module(watcher)
 
 
 def readback(parsed, **overrides):
-    """GET bills/{id} response matching the parsed invoice."""
+    """GET bills/{id} response matching what the pipeline posts for the parsed invoice."""
+    payload = zb.build_payload(parsed, MAERSK_ID, zb.determine_tax_route(parsed, "MAERSK A/S", GSTIN))
+    tax = sum(parsed[f] for f in ("tax_amount_igst", "tax_amount_cgst", "tax_amount_sgst"))
     bill = {"bill_id": BILL_ID, "bill_number": parsed["bill_number"], "vendor_id": MAERSK_ID,
-            "date": parsed["bill_date"], "sub_total": parsed["subtotal"],
-            "total": parsed["invoice_total"]}
+            "date": parsed["bill_date"], "currency_code": "INR", "sub_total": parsed["subtotal"],
+            "tax_total": round(tax, 2), "total": parsed["invoice_total"],
+            "line_items": [{"rate": line["rate"], "quantity": line["quantity"], "tax_id": line["tax_id"]}
+                           for line in payload["line_items"]]}
     bill.update(overrides)
     return bill
 
@@ -160,6 +164,24 @@ class ApprovalBoundaryTests(unittest.TestCase):
         status = watcher_status(self.folder, log, "sample.pdf")
         self.assertEqual(status, "post_verify_failed")
         self.assertFalse(watcher.should_mark_seen(status))
+
+    def test_readback_must_match_printed_amounts(self):
+        # Audit F01/F02: each of these passed the old subtotal-only, 1% check.
+        parsed = approvable_invoice()
+        cases = {
+            "total_mismatch": {"total": parsed["invoice_total"] + 0.50},
+            "tax_total_mismatch": {"tax_total": 21341.38 + 0.50, "total": parsed["invoice_total"] + 0.50},
+            "sub_total_mismatch": {"sub_total": parsed["subtotal"] + 2900},
+        }
+        for error, overrides in cases.items():
+            with self.subTest(error), tempfile.TemporaryDirectory(prefix="zoho-approval-test-") as folder:
+                run_pipeline(parsed, folder=folder)
+                log, posts, _, _ = run_pipeline(parsed, folder=folder, approver=APPROVER,
+                                                post=lambda endpoint, payload: {"bill": {"bill_id": BILL_ID}},
+                                                readback=readback(parsed, **overrides))
+                self.assertEqual(posts, 1)
+                self.assertEqual(log["verified"], [])
+                self.assertIn(error, log["post_verify_failed"][0]["error"])
 
     def test_approval_is_bound_to_the_reviewed_payload(self):
         self.pipeline(approvable_invoice())

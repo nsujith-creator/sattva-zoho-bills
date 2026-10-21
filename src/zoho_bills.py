@@ -931,7 +931,18 @@ def extract_created_bill_id(result):
 
 
 # ── Zoho data fetch ───────────────────────────────────────────────────────────
+# Read-back may differ from the invoice only by paise rounding of computed tax,
+# at most this much per line (audit F02 replaced a max(Rs 1, 1%) tolerance).
+VERIFY_ROUNDING_PER_LINE = Decimal("0.01")
+
+
 def verify_created_bill(bill_id, payload, parsed, run_id="unset", filename="", usd_rate=None):
+    """
+    Read the bill back and compare it with what was posted and what the invoice
+    printed (audit F01/F02). Lines and sub_total must equal the payload exactly;
+    total (and, for forward charge, tax_total) must equal the printed payable
+    within per-line paise rounding. A missing field fails the check.
+    """
     result = {"ok": False, "checks": {}, "errors": []}
     try:
         data = zoho_get(f"bills/{bill_id}")
@@ -939,165 +950,123 @@ def verify_created_bill(bill_id, payload, parsed, run_id="unset", filename="", u
         if not isinstance(bill, dict):
             bill = {}
 
-        expected_bill_number = str(payload.get("bill_number", "")).strip()
-        actual_bill_number = str(bill.get("bill_number", "")).strip()
-        bill_number_ok = actual_bill_number == expected_bill_number
-        result["checks"]["bill_number"] = {
-            "ok": bill_number_ok,
-            "expected": expected_bill_number,
-            "actual": actual_bill_number,
-        }
-        if not bill_number_ok:
-            result["errors"].append(
-                f"bill_number_mismatch expected={expected_bill_number!r} actual={actual_bill_number!r}")
+        def compare_text(name, expected, actual):
+            ok = actual == expected
+            result["checks"][name] = {"ok": ok, "expected": expected, "actual": actual}
+            if not ok:
+                result["errors"].append(f"{name}_mismatch expected={expected!r} actual={actual!r}")
 
-        expected_vendor_id = str(payload.get("vendor_id", "")).strip()
-        actual_vendor_id = str(bill.get("vendor_id", "")).strip()
-        vendor_id_ok = actual_vendor_id == expected_vendor_id
-        result["checks"]["vendor_id"] = {
-            "ok": vendor_id_ok,
-            "expected": expected_vendor_id,
-            "actual": actual_vendor_id,
-        }
-        if not vendor_id_ok:
-            result["errors"].append(
-                f"vendor_id_mismatch expected={expected_vendor_id!r} actual={actual_vendor_id!r}")
+        compare_text("bill_number", str(payload.get("bill_number", "")).strip(),
+                     str(bill.get("bill_number", "")).strip())
+        compare_text("vendor_id", str(payload.get("vendor_id", "")).strip(),
+                     str(bill.get("vendor_id", "")).strip())
+        compare_text("bill_date", str(parsed.get("bill_date", "")).strip(),
+                     str(bill.get("date", "")).strip())
+        compare_text("currency_code", str(payload.get("currency_code", "INR")).upper(),
+                     str(bill.get("currency_code", "")).strip().upper())
 
-        expected_bill_date = str(parsed.get("bill_date", "")).strip()
-        actual_bill_date = str(bill.get("date", "")).strip()
-        bill_date_ok = actual_bill_date == expected_bill_date
-        result["checks"]["bill_date"] = {
-            "ok": bill_date_ok,
-            "expected": expected_bill_date,
-            "actual": actual_bill_date,
-        }
-        if not bill_date_ok:
-            result["errors"].append(
-                f"bill_date_mismatch expected={expected_bill_date!r} actual={actual_bill_date!r}")
-
-        def numeric_value(value):
+        def money(value):
             if value is None or str(value).strip() == "":
                 return None
             try:
-                return float(value)
-            except (TypeError, ValueError):
+                amount = Decimal(str(value))
+            except InvalidOperation:
                 return None
+            if not amount.is_finite():
+                return None
+            return amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
-        is_overseas_bill = bool(payload.get("is_reverse_charge_applied"))
-        if is_overseas_bill:
+        def compare_amount(name, expected, actual, tolerance):
+            if actual is None:
+                ok, error = False, f"zoho_{name}_missing"
+            elif expected is None:
+                ok, error = False, f"expected_{name}_unavailable"
+            else:
+                ok = abs(actual - expected) <= tolerance
+                error = (f"{name}_mismatch expected={expected} actual={actual} "
+                         f"difference={abs(actual - expected)} tolerance={tolerance}")
+            result["checks"][name] = {
+                "ok": ok, "tolerance": float(tolerance),
+                "expected": float(expected) if expected is not None else None,
+                "actual": float(actual) if actual is not None else None,
+            }
+            if not ok:
+                result["errors"].append(error)
+
+        is_rcm = bool(payload.get("is_reverse_charge_applied"))
+        sent_lines = payload.get("line_items", [])
+        got_lines = bill.get("line_items", [])
+        if not isinstance(got_lines, list):
+            got_lines = []
+        rounding = VERIFY_ROUNDING_PER_LINE * max(len(sent_lines), 1)
+
+        # Lines: Zoho must hold exactly what was posted.
+        lines_ok = bool(sent_lines) and len(got_lines) == len(sent_lines)
+        line_details = []
+        sent_subtotal = Decimal("0.00")
+        for idx, sent in enumerate(sent_lines):
+            sent_amount = money(Decimal(str(sent.get("rate", 0))) * Decimal(str(sent.get("quantity", 1))))
+            sent_subtotal += sent_amount or Decimal("0.00")
+            got = got_lines[idx] if idx < len(got_lines) and isinstance(got_lines[idx], dict) else {}
+            got_amount = None
+            if money(got.get("rate")) is not None and money(got.get("quantity", 1)) is not None:
+                got_amount = money(money(got.get("rate")) * money(got.get("quantity", 1)))
+            detail = {"index": idx, "expected_amount": float(sent_amount),
+                      "actual_amount": float(got_amount) if got_amount is not None else None}
+            ok_line = got_amount == sent_amount
+            if is_rcm:
+                # build_payload applies IGST 18% as the reverse-charge tax on every line.
+                expected_rc = money(sent_amount * Decimal("0.18"))
+                actual_rc = money(got.get("reverse_charge_tax_amount"))
+                rc_tax_id = str(sent.get("reverse_charge_tax_id") or "")
+                detail.update(reverse_charge_tax_id=got.get("reverse_charge_tax_id"),
+                              expected_reverse_charge=float(expected_rc),
+                              actual_reverse_charge=float(actual_rc) if actual_rc is not None else None)
+                ok_line = (ok_line and bool(rc_tax_id)
+                           and str(got.get("reverse_charge_tax_id") or "") == rc_tax_id
+                           and actual_rc is not None
+                           and abs(actual_rc - expected_rc) <= VERIFY_ROUNDING_PER_LINE)
+            else:
+                detail.update(expected_tax_id=sent.get("tax_id"), actual_tax_id=got.get("tax_id"))
+                ok_line = ok_line and str(got.get("tax_id") or "") == str(sent.get("tax_id") or "")
+            detail["ok"] = ok_line
+            lines_ok = lines_ok and ok_line
+            line_details.append(detail)
+        result["checks"]["line_items"] = {"ok": lines_ok, "expected_count": len(sent_lines),
+                                          "actual_count": len(got_lines), "lines": line_details}
+        if not lines_ok:
+            result["errors"].append("line_items_mismatch")
+
+        compare_amount("sub_total", sent_subtotal, money(bill.get("sub_total")), Decimal("0.00"))
+
+        # Printed payable (F01). Forward charge: the printed grand total and tax.
+        # Reverse charge: the vendor is owed the pre-tax amount, FX-converted for
+        # USD invoices exactly as build_payload converted the lines.
+        printed_total = money(parsed.get("invoice_total"))
+        printed_tax = Decimal("0.00")
+        for field in ("tax_amount_igst", "tax_amount_cgst", "tax_amount_sgst"):
+            printed_tax += money(parsed.get(field)) or Decimal("0.00")
+        if is_rcm:
             actual_rca = bill.get("is_reverse_charge_applied")
-            rca_ok = actual_rca is True
-            result["checks"]["reverse_charge_applied"] = {
-                "ok": rca_ok, "expected": True, "actual": actual_rca,
-            }
-            if not rca_ok:
+            result["checks"]["reverse_charge_applied"] = {"ok": actual_rca is True, "expected": True,
+                                                          "actual": actual_rca}
+            if actual_rca is not True:
                 result["errors"].append(f"reverse_charge_not_applied actual={actual_rca!r}")
-
-            bill_line_items = bill.get("line_items", [])
-            if not isinstance(bill_line_items, list):
-                bill_line_items = []
-            line_rcm_details = []
-            line_rcm_ok = bool(bill_line_items)
-            for idx, bl in enumerate(bill_line_items):
-                rc_tax_id = str(bl.get("reverse_charge_tax_id", "") or "").strip()
-                rc_tax_amt = numeric_value(bl.get("reverse_charge_tax_amount"))
-                ok_line = bool(rc_tax_id) and (rc_tax_amt is not None and rc_tax_amt > 0)
-                line_rcm_details.append({
-                    "index": idx, "reverse_charge_tax_id": rc_tax_id,
-                    "reverse_charge_tax_amount": rc_tax_amt, "ok": ok_line,
-                })
-                if not ok_line:
-                    line_rcm_ok = False
-            result["checks"]["reverse_charge_line_items"] = {
-                "ok": line_rcm_ok, "lines": line_rcm_details,
-            }
-            if not line_rcm_ok:
-                result["errors"].append("reverse_charge_line_item_incomplete")
-
-        parsed_currency = str(parsed.get("currency_code", "INR")).upper()
-        invoice_total_val = numeric_value(parsed.get("invoice_total"))
-        if invoice_total_val is not None:
-            # Zoho's sub_total is pre-tax; invoice_total is the tax-inclusive
-            # printed grand total. Strip supplier-charged tax back out before
-            # comparing against Zoho's subtotal.
-            _tax_total = 0.0
-            for _tf in ("tax_amount_igst", "tax_amount_cgst", "tax_amount_sgst"):
-                _tv = numeric_value(parsed.get(_tf))
-                if _tv is not None:
-                    _tax_total += _tv
-            pretax_invoice_total = invoice_total_val - _tax_total
-        if invoice_total_val is not None and parsed_currency == "USD" and usd_rate:
-            expected_subtotal = round(pretax_invoice_total * usd_rate, 2)
-            expected_subtotal_source = "parsed_invoice_total_fx_converted"
-        elif invoice_total_val is not None:
-            expected_subtotal = pretax_invoice_total
-            expected_subtotal_source = "parsed_invoice_total"
+            expected_total = None
+            if printed_total is not None:
+                expected_total = printed_total - printed_tax
+                if str(parsed.get("currency_code", "INR")).upper() == "USD":
+                    expected_total = money(expected_total * Decimal(str(usd_rate))) if usd_rate else None
         else:
-            # Defensive fallback only -- every bill reaching post time should have
-            # passed the invoice_total reconciliation gate in validate_before_post().
-            expected_subtotal = sum(
-                float(line["rate"]) * float(line.get("quantity", 1))
-                for line in payload.get("line_items", [])
-            )
-            expected_subtotal_source = "payload_line_items_fallback"
+            expected_total = printed_total
+            compare_amount("tax_total", printed_tax, money(bill.get("tax_total")), rounding)
+        compare_amount("total", expected_total, money(bill.get("total")), rounding)
 
-        zoho_subtotal = None
-        zoho_subtotal_field = ""
-        for field in ("sub_total", "subtotal", "sub_total_inclusive_of_tax"):
-            numeric = numeric_value(bill.get(field))
-            if numeric is not None:
-                zoho_subtotal = numeric
-                zoho_subtotal_field = field
-                break
-
-        if zoho_subtotal is None:
-            returned_line_items = bill.get("line_items", [])
-            if isinstance(returned_line_items, list) and returned_line_items:
-                line_subtotal = 0.0
-                line_items_numeric = True
-                for line in returned_line_items:
-                    rate = numeric_value(line.get("rate", 0))
-                    quantity = numeric_value(line.get("quantity", 1))
-                    if rate is None or quantity is None:
-                        line_items_numeric = False
-                        break
-                    line_subtotal += rate * quantity
-                if line_items_numeric:
-                    zoho_subtotal = line_subtotal
-                    zoho_subtotal_field = "line_items"
-
-        zoho_total = numeric_value(bill.get("total"))
-
-        tolerance = max(1.0, expected_subtotal * 0.01)
-        if zoho_subtotal is None:
-            amount_ok = False
-            difference = None
-            result["errors"].append("zoho_subtotal_missing")
-        else:
-            difference = abs(zoho_subtotal - expected_subtotal)
-            amount_ok = difference <= tolerance
-            if not amount_ok:
-                result["errors"].append(
-                    f"amount_mismatch expected_subtotal={expected_subtotal:.2f} "
-                    f"actual_subtotal={zoho_subtotal:.2f} "
-                    f"difference={difference:.2f} tolerance={tolerance:.2f}")
-
-        result["checks"]["amount"] = {
-            "ok": amount_ok,
-            "expected_subtotal": expected_subtotal,
-            "expected_subtotal_source": expected_subtotal_source,
-            "actual_subtotal": zoho_subtotal,
-            "amount_basis": "subtotal",
-            "field": zoho_subtotal_field,
-            "difference": difference,
-            "tolerance": tolerance,
-            "zoho_total": zoho_total,
-        }
         result["ok"] = not result["errors"]
         detail = " ".join(result["errors"])[:300]
         if result["ok"]:
             obs_print("POST_VERIFY_PASSED",
-                      f"run_id={run_id} file={filename} bill_id={bill_id} amount_basis=subtotal")
+                      f"run_id={run_id} file={filename} bill_id={bill_id} basis=lines+printed_total")
         else:
             obs_print("POST_VERIFY_FAILED",
                       f"run_id={run_id} file={filename} bill_id={bill_id} detail={detail}")
@@ -2782,14 +2751,15 @@ def _business_test():
             return {
                 "vendor_id": "VENDOR1",
                 "bill_number": "INV123",
+                "currency_code": "INR",
                 "line_items": [
-                    {"description": "A", "rate": 100, "quantity": 2},
-                    {"description": "B", "rate": 50},
+                    {"description": "A", "rate": 100, "quantity": 2, "tax_id": "TAX_IGST18"},
+                    {"description": "B", "rate": 50, "tax_id": "TAX_IGST18"},
                 ],
             }
 
-        def verify_parsed(invoice_total=250, bill_date="2026-05-01", currency_code="INR",
-                          tax_amount_igst=0, tax_amount_cgst=0, tax_amount_sgst=0):
+        def verify_parsed(invoice_total=295, bill_date="2026-05-01", currency_code="INR",
+                          tax_amount_igst=45, tax_amount_cgst=0, tax_amount_sgst=0):
             return {
                 "bill_date": bill_date,
                 "currency_code": currency_code,
@@ -2798,6 +2768,43 @@ def _business_test():
                 "tax_amount_cgst": tax_amount_cgst,
                 "tax_amount_sgst": tax_amount_sgst,
             }
+
+        def verify_bill(**overrides):
+            """GET bills/{id} response matching verify_payload() and verify_parsed()."""
+            bill = {
+                "bill_number": "INV123",
+                "vendor_id": "VENDOR1",
+                "date": "2026-05-01",
+                "currency_code": "INR",
+                "sub_total": 250,
+                "tax_total": 45,
+                "total": 295,
+                "line_items": [
+                    {"rate": 100, "quantity": 2, "tax_id": "TAX_IGST18"},
+                    {"rate": 50, "quantity": 1, "tax_id": "TAX_IGST18"},
+                ],
+            }
+            bill.update(overrides)
+            return bill
+
+        def rcm_payload(rate):
+            return {
+                "vendor_id": "VENDOR1",
+                "bill_number": "INV123",
+                "currency_code": "INR",
+                "line_items": [{"description": "A", "rate": rate, "quantity": 1,
+                                "reverse_charge_tax_id": "914109000000014234"}],
+                "is_reverse_charge_applied": True,
+            }
+
+        def rcm_bill(amount, **overrides):
+            bill = verify_bill(sub_total=amount, total=amount, is_reverse_charge_applied=True,
+                               line_items=[{"rate": amount, "quantity": 1,
+                                            "reverse_charge_tax_id": "914109000000014234",
+                                            "reverse_charge_tax_amount": round(amount * 0.18, 2)}])
+            bill.pop("tax_total")
+            bill.update(overrides)
+            return bill
 
         def run_verify_with_bill(bill, payload=None, parsed=None, usd_rate=None):
             calls = []
@@ -2819,157 +2826,136 @@ def _business_test():
             return result
 
         def t_verify_created_bill_matching():
-            r = run_verify_with_bill({
-                "bill_number": "INV123",
-                "vendor_id": "VENDOR1",
-                "date": "2026-05-01",
-                "sub_total": 250,
-            })
-            assert r["ok"] is True
-            assert not r["errors"]
-            assert r["checks"]["amount"]["field"] == "sub_total"
-            assert r["checks"]["amount"]["expected_subtotal_source"] == "parsed_invoice_total"
+            r = run_verify_with_bill(verify_bill())
+            assert r["ok"] is True, r["errors"]
+            for name in ("sub_total", "tax_total", "total", "line_items", "currency_code"):
+                assert r["checks"][name]["ok"] is True, name
 
-        def t_verify_created_bill_subtotal_ignores_tax_total():
+        def t_verify_created_bill_total_must_match_printed():
+            # Audit F01: Zoho added Rs 11,977.06 of tax the invoice did not print.
             payload = verify_payload()
-            payload["line_items"] = [{"description": "A", "rate": 163821.16, "quantity": 1}]
-            r = run_verify_with_bill({
-                "bill_number": "INV123",
-                "vendor_id": "VENDOR1",
-                "date": "2026-05-01",
-                "sub_total": 163821.16,
-                "total": 175798.22,
-            }, payload=payload, parsed=verify_parsed(invoice_total=163821.16))
-            assert r["ok"] is True
-            assert not r["errors"]
-            assert r["checks"]["amount"]["actual_subtotal"] == 163821.16
-            assert r["checks"]["amount"]["zoho_total"] == 175798.22
+            payload["line_items"] = [{"description": "A", "rate": 163821.16, "quantity": 1,
+                                      "tax_id": "TAX_IGST18"}]
+            bill = verify_bill(sub_total=163821.16, tax_total=11977.06, total=175798.22,
+                               line_items=[{"rate": 163821.16, "quantity": 1, "tax_id": "TAX_IGST18"}])
+            r = run_verify_with_bill(bill, payload=payload,
+                                     parsed=verify_parsed(invoice_total=163821.16, tax_amount_igst=0))
+            assert r["ok"] is False
+            assert any(e.startswith("total_mismatch") for e in r["errors"]), r["errors"]
+            assert any(e.startswith("tax_total_mismatch") for e in r["errors"]), r["errors"]
 
         def t_verify_created_bill_number_mismatch():
-            r = run_verify_with_bill({
-                "bill_number": "INV999",
-                "vendor_id": "VENDOR1",
-                "date": "2026-05-01",
-                "sub_total": 250,
-            })
+            r = run_verify_with_bill(verify_bill(bill_number="INV999"))
             assert r["ok"] is False
             assert any("bill_number_mismatch" in e for e in r["errors"])
 
         def t_verify_created_bill_vendor_mismatch():
-            r = run_verify_with_bill({
-                "bill_number": "INV123",
-                "vendor_id": "VENDOR9",
-                "date": "2026-05-01",
-                "sub_total": 250,
-            })
+            r = run_verify_with_bill(verify_bill(vendor_id="VENDOR9"))
             assert r["ok"] is False
             assert any("vendor_id_mismatch" in e for e in r["errors"])
 
         def t_verify_created_bill_amount_mismatch():
-            r = run_verify_with_bill({
-                "bill_number": "INV123",
-                "vendor_id": "VENDOR1",
-                "date": "2026-05-01",
-                "sub_total": 260,
-            })
+            r = run_verify_with_bill(verify_bill(sub_total=260, total=305))
             assert r["ok"] is False
-            assert any("amount_mismatch" in e for e in r["errors"])
+            assert any(e.startswith("sub_total_mismatch") for e in r["errors"])
+            assert any(e.startswith("total_mismatch") for e in r["errors"])
 
-        def t_verify_created_bill_amount_tolerance():
-            r = run_verify_with_bill({
-                "bill_number": "INV123",
-                "vendor_id": "VENDOR1",
-                "date": "2026-05-01",
-                "sub_total": 252.4,
-            })
-            assert r["ok"] is True
-            assert r["checks"]["amount"]["field"] == "sub_total"
+        def t_verify_created_bill_no_percentage_tolerance():
+            # Audit F02: the old max(Rs 1, 1%) band accepted both of these.
+            for sub_total in (252.4, 250.5):
+                r = run_verify_with_bill(verify_bill(sub_total=sub_total))
+                assert r["ok"] is False, sub_total
+                assert any(e.startswith("sub_total_mismatch") for e in r["errors"])
 
-        def t_verify_created_bill_subtotal_missing():
-            r = run_verify_with_bill({
-                "bill_number": "INV123",
-                "vendor_id": "VENDOR1",
-                "date": "2026-05-01",
-            })
+        def t_verify_created_bill_paise_rounding_only():
+            # Two lines allow Rs 0.02 of computed-tax rounding, no more.
+            r = run_verify_with_bill(verify_bill(tax_total=45.02, total=295.02))
+            assert r["ok"] is True, r["errors"]
+            r = run_verify_with_bill(verify_bill(tax_total=45.03, total=295.03))
             assert r["ok"] is False
-            assert "zoho_subtotal_missing" in r["errors"]
+            assert any(e.startswith("total_mismatch") for e in r["errors"])
+
+        def t_verify_created_bill_fields_missing():
+            for field, error in (("sub_total", "zoho_sub_total_missing"),
+                                 ("total", "zoho_total_missing"),
+                                 ("tax_total", "zoho_tax_total_missing")):
+                bill = verify_bill()
+                bill.pop(field)
+                r = run_verify_with_bill(bill)
+                assert r["ok"] is False
+                assert error in r["errors"], (field, r["errors"])
+            bill = verify_bill()
+            bill.pop("currency_code")
+            assert run_verify_with_bill(bill)["ok"] is False
+            r = run_verify_with_bill(verify_bill(), parsed=dict(verify_parsed(), invoice_total=None))
+            assert "expected_total_unavailable" in r["errors"]
+
+        def t_verify_created_bill_lines_and_route():
+            igst_as_cgst = verify_bill(line_items=[
+                {"rate": 100, "quantity": 2, "tax_id": "TAX_CGST_SGST18"},
+                {"rate": 50, "quantity": 1, "tax_id": "TAX_IGST18"}])
+            missing_line = verify_bill(line_items=[{"rate": 100, "quantity": 2, "tax_id": "TAX_IGST18"}])
+            moved_amount = verify_bill(line_items=[
+                {"rate": 125, "quantity": 1, "tax_id": "TAX_IGST18"},
+                {"rate": 125, "quantity": 1, "tax_id": "TAX_IGST18"}])
+            for bill in (igst_as_cgst, missing_line, moved_amount):
+                r = run_verify_with_bill(bill)
+                assert r["ok"] is False
+                assert "line_items_mismatch" in r["errors"], r["errors"]
+
+        def t_verify_created_bill_currency_mismatch():
+            r = run_verify_with_bill(verify_bill(currency_code="USD"))
+            assert r["ok"] is False
+            assert any("currency_code_mismatch" in e for e in r["errors"])
 
         def t_verify_created_bill_date_mismatch():
-            r = run_verify_with_bill({
-                "bill_number": "INV123",
-                "vendor_id": "VENDOR1",
-                "date": "2026-06-15",
-                "sub_total": 250,
-            })
+            r = run_verify_with_bill(verify_bill(date="2026-06-15"))
             assert r["ok"] is False
             assert any("bill_date_mismatch" in e for e in r["errors"])
 
         def t_verify_created_bill_fx_converted_subtotal():
-            r = run_verify_with_bill({
-                "bill_number": "INV123",
-                "vendor_id": "VENDOR1",
-                "date": "2026-05-01",
-                "sub_total": 8000.0,
-            }, parsed=verify_parsed(invoice_total=100.0, currency_code="USD"), usd_rate=80)
-            assert r["ok"] is True
-            assert r["checks"]["amount"]["expected_subtotal"] == 8000.0
-            assert r["checks"]["amount"]["expected_subtotal_source"] == "parsed_invoice_total_fx_converted"
+            r = run_verify_with_bill(rcm_bill(8000.0), payload=rcm_payload(8000.0),
+                                     parsed=verify_parsed(invoice_total=100.0, currency_code="USD",
+                                                          tax_amount_igst=0), usd_rate=80)
+            assert r["ok"] is True, r["errors"]
+            assert r["checks"]["total"]["expected"] == 8000.0
 
         def t_verify_created_bill_fx_converted_no_tax():
-            r = run_verify_with_bill({
-                "bill_number": "INV123",
-                "vendor_id": "VENDOR1",
-                "date": "2026-05-01",
-                "sub_total": 3960.0,
-            }, parsed=verify_parsed(invoice_total=45, currency_code="USD"), usd_rate=88)
-            assert r["ok"] is True
-            assert r["checks"]["amount"]["expected_subtotal"] == 3960.0
-            assert r["checks"]["amount"]["expected_subtotal_source"] == "parsed_invoice_total_fx_converted"
-
-        def t_verify_created_bill_subtotal_strips_domestic_tax():
-            r = run_verify_with_bill({
-                "bill_number": "INV123",
-                "vendor_id": "VENDOR1",
-                "date": "2026-05-01",
-                "sub_total": 10000.0,
-            }, parsed=verify_parsed(invoice_total=11800.0, tax_amount_igst=1800.0))
-            assert r["ok"] is True
-            assert r["checks"]["amount"]["expected_subtotal"] == 10000.0
-            assert r["checks"]["amount"]["expected_subtotal_source"] == "parsed_invoice_total"
+            r = run_verify_with_bill(rcm_bill(3960.0), payload=rcm_payload(3960.0),
+                                     parsed=verify_parsed(invoice_total=45, currency_code="USD",
+                                                          tax_amount_igst=0), usd_rate=88)
+            assert r["ok"] is True, r["errors"]
+            # A rate change between conversion and read-back is a real discrepancy.
+            r = run_verify_with_bill(rcm_bill(3960.0), payload=rcm_payload(3960.0),
+                                     parsed=verify_parsed(invoice_total=45, currency_code="USD",
+                                                          tax_amount_igst=0), usd_rate=88.5)
+            assert r["ok"] is False
+            assert any(e.startswith("total_mismatch") for e in r["errors"])
 
         def t_verify_created_bill_rcm_checks():
-            overseas_payload = {
-                "vendor_id": "VENDOR1",
-                "bill_number": "INV123",
-                "line_items": [{"description": "A", "rate": 100, "quantity": 1}],
-                "is_reverse_charge_applied": True,
-            }
-            ok_bill = {
-                "bill_number": "INV123",
-                "vendor_id": "VENDOR1",
-                "date": "2026-05-01",
-                "sub_total": 250,
-                "is_reverse_charge_applied": True,
-                "line_items": [{"rate": 250, "quantity": 1,
-                                 "reverse_charge_tax_id": "914109000000014234",
-                                 "reverse_charge_tax_amount": 45.0}],
-            }
-            r = run_verify_with_bill(ok_bill, payload=overseas_payload)
-            assert r["ok"] is True
+            parsed = verify_parsed(invoice_total=250, tax_amount_igst=0)
+            r = run_verify_with_bill(rcm_bill(250.0), payload=rcm_payload(250.0), parsed=parsed)
+            assert r["ok"] is True, r["errors"]
             assert r["checks"]["reverse_charge_applied"]["ok"] is True
-            assert r["checks"]["reverse_charge_line_items"]["ok"] is True
+            assert r["checks"]["line_items"]["ok"] is True
 
-            bad_bill = dict(ok_bill)
-            bad_bill["is_reverse_charge_applied"] = False
-            r = run_verify_with_bill(bad_bill, payload=overseas_payload)
+            r = run_verify_with_bill(rcm_bill(250.0, is_reverse_charge_applied=False),
+                                     payload=rcm_payload(250.0), parsed=parsed)
             assert r["ok"] is False
             assert any("reverse_charge_not_applied" in e for e in r["errors"])
 
-            missing_line_bill = dict(ok_bill)
-            missing_line_bill["line_items"] = [{"rate": 250, "quantity": 1}]
-            r = run_verify_with_bill(missing_line_bill, payload=overseas_payload)
+            for line in ({"rate": 250, "quantity": 1},
+                         {"rate": 250, "quantity": 1, "reverse_charge_tax_id": "914109000000014234",
+                          "reverse_charge_tax_amount": 40.0}):
+                r = run_verify_with_bill(rcm_bill(250.0, line_items=[line]),
+                                         payload=rcm_payload(250.0), parsed=parsed)
+                assert r["ok"] is False
+                assert "line_items_mismatch" in r["errors"], r["errors"]
+
+            # The vendor is owed the pre-tax amount; a total that adds the RCM tax fails.
+            r = run_verify_with_bill(rcm_bill(250.0, total=295.0), payload=rcm_payload(250.0), parsed=parsed)
             assert r["ok"] is False
-            assert any("reverse_charge_line_item_incomplete" in e for e in r["errors"])
+            assert any(e.startswith("total_mismatch") for e in r["errors"])
 
         def t_due_date_null_safety():
             route = {"is_overseas": True, "tax_mode": "rcm", "tax_id_key": None}
@@ -3229,16 +3215,18 @@ def _business_test():
         check("created_bill_id", t_created_bill_id)
         check("build_payload", t_build_payload)
         check("verify_created_bill_matching", t_verify_created_bill_matching)
-        check("verify_created_bill_subtotal_ignores_tax_total", t_verify_created_bill_subtotal_ignores_tax_total)
+        check("verify_created_bill_total_must_match_printed", t_verify_created_bill_total_must_match_printed)
         check("verify_created_bill_bill_number_mismatch", t_verify_created_bill_number_mismatch)
         check("verify_created_bill_vendor_id_mismatch", t_verify_created_bill_vendor_mismatch)
         check("verify_created_bill_amount_mismatch", t_verify_created_bill_amount_mismatch)
-        check("verify_created_bill_amount_tolerance", t_verify_created_bill_amount_tolerance)
-        check("verify_created_bill_subtotal_missing", t_verify_created_bill_subtotal_missing)
+        check("verify_created_bill_no_percentage_tolerance", t_verify_created_bill_no_percentage_tolerance)
+        check("verify_created_bill_paise_rounding_only", t_verify_created_bill_paise_rounding_only)
+        check("verify_created_bill_fields_missing", t_verify_created_bill_fields_missing)
+        check("verify_created_bill_lines_and_route", t_verify_created_bill_lines_and_route)
+        check("verify_created_bill_currency_mismatch", t_verify_created_bill_currency_mismatch)
         check("verify_created_bill_date_mismatch", t_verify_created_bill_date_mismatch)
         check("verify_created_bill_fx_converted_subtotal", t_verify_created_bill_fx_converted_subtotal)
         check("verify_created_bill_fx_converted_no_tax", t_verify_created_bill_fx_converted_no_tax)
-        check("verify_created_bill_subtotal_strips_domestic_tax", t_verify_created_bill_subtotal_strips_domestic_tax)
         check("verify_created_bill_rcm_checks", t_verify_created_bill_rcm_checks)
         check("build_payload_due_date_null", t_due_date_null_safety)
         check("validate_before_post", t_validate_before_post)

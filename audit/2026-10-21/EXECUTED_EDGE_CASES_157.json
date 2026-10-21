@@ -1,0 +1,1572 @@
+[
+  {
+    "case_id": "X001",
+    "scenario": "validate_valid",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X002",
+    "scenario": "validate_empty_vendor",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X003",
+    "scenario": "validate_empty_bill",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X004",
+    "scenario": "validate_short_bill",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X005",
+    "scenario": "validate_missing_date",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X006",
+    "scenario": "validate_bad_date_format",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X007",
+    "scenario": "validate_equal_mbl",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X008",
+    "scenario": "validate_empty_lines",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X009",
+    "scenario": "validate_zero_amount",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X010",
+    "scenario": "validate_missing_total",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X011",
+    "scenario": "validate_negative_total",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X012",
+    "scenario": "validate_short_due_date",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X013",
+    "scenario": "validate_inconsistent_total",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X014",
+    "scenario": "validate_small_rounding",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X015",
+    "scenario": "validate_tax_integrates",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X016",
+    "scenario": "validate_credit_integrates",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X017",
+    "scenario": "validate_quantity_integrates",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X018",
+    "scenario": "validate_USD_single",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X019",
+    "scenario": "validate_INR_line_on_USD",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X020",
+    "scenario": "validate_EUR_line_on_INR",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X021",
+    "scenario": "validate_blanks_tax",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X022",
+    "scenario": "validate_multiple",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X023",
+    "scenario": "validate_discount_positive",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X024",
+    "scenario": "validate_missing_currency",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X025",
+    "scenario": "validate_different_case_mbl",
+    "area": "validation",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X026",
+    "scenario": "overseas_ANTHROPIC_True",
+    "area": "overseas",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X027",
+    "scenario": "overseas_ANTHROPIC_False",
+    "area": "overseas",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X028",
+    "scenario": "overseas_ADOBE_IRELAND_True",
+    "area": "overseas",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X029",
+    "scenario": "overseas_ADOBE_IRELAND_False",
+    "area": "overseas",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X030",
+    "scenario": "overseas_MICROSOFT_CORPORATION_True",
+    "area": "overseas",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X031",
+    "scenario": "overseas_MICROSOFT_CORPORATION_False",
+    "area": "overseas",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X032",
+    "scenario": "overseas_OPENAI_LLC_True",
+    "area": "overseas",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X033",
+    "scenario": "overseas_OPENAI_LLC_False",
+    "area": "overseas",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X034",
+    "scenario": "overseas_AWS_EUROPE_True",
+    "area": "overseas",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X035",
+    "scenario": "overseas_AWS_EUROPE_False",
+    "area": "overseas",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X036",
+    "scenario": "overseas_ANTHROPIC_LABS_True",
+    "area": "overseas",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X037",
+    "scenario": "overseas_ANTHROPIC_LABS_False",
+    "area": "overseas",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X038",
+    "scenario": "overseas_ADOBE_INC_True",
+    "area": "overseas",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X039",
+    "scenario": "overseas_ADOBE_INC_False",
+    "area": "overseas",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X040",
+    "scenario": "overseas_MICROSOFT_365_True",
+    "area": "overseas",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X041",
+    "scenario": "overseas_MICROSOFT_365_False",
+    "area": "overseas",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X042",
+    "scenario": "overseas_OPENAI_SERVICES_True",
+    "area": "overseas",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X043",
+    "scenario": "overseas_OPENAI_SERVICES_False",
+    "area": "overseas",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X044",
+    "scenario": "overseas_AWS_ASIA_True",
+    "area": "overseas",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X045",
+    "scenario": "overseas_AWS_ASIA_False",
+    "area": "overseas",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X046",
+    "scenario": "filename_BOMFALI260400035InvoicePrint.pdf",
+    "area": "invoice_number",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X047",
+    "scenario": "filename_BOMFALI260400035.pdf",
+    "area": "invoice_number",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X048",
+    "scenario": "filename_INEMHC27075341.pdf",
+    "area": "invoice_number",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X049",
+    "scenario": "filename_PTGFWD112.pdf",
+    "area": "invoice_number",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X050",
+    "scenario": "filename_VSLNS2323.pdf",
+    "area": "invoice_number",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X051",
+    "scenario": "filename_AMC2486294.pdf",
+    "area": "invoice_number",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X052",
+    "scenario": "filename_random_abc.pdf",
+    "area": "invoice_number",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X053",
+    "scenario": "filename_12345.pdf",
+    "area": "invoice_number",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X054",
+    "scenario": "filename_INEMHC27075341_duplicate.pdf",
+    "area": "invoice_number",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X055",
+    "scenario": "filename_BOMFALI1_copy.pdf",
+    "area": "invoice_number",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X056",
+    "scenario": "filename_BOMFALI2_dup.pdf",
+    "area": "invoice_number",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X057",
+    "scenario": "filename_BOMFALI3_dupLicate.pdf",
+    "area": "invoice_number",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X058",
+    "scenario": "filename_INEMHC999.PDF",
+    "area": "invoice_number",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X059",
+    "scenario": "filename_VSLNS-99.pdf",
+    "area": "invoice_number",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X060",
+    "scenario": "filename_PTGFWD001 InvoicePrint.pdf",
+    "area": "invoice_number",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X061",
+    "scenario": "filename_AMC000InvoicePrint.pdf",
+    "area": "invoice_number",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X062",
+    "scenario": "filename_FRT_INV_INEMHC270.pdf",
+    "area": "invoice_number",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X063",
+    "scenario": "filename_BOMFALI77.pdf",
+    "area": "invoice_number",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X064",
+    "scenario": "filename_UNKNOWN.pdf",
+    "area": "invoice_number",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X065",
+    "scenario": "filename_INEMHC21.pdf",
+    "area": "invoice_number",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X066",
+    "scenario": "vendor_match_00",
+    "area": "vendor",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X067",
+    "scenario": "vendor_match_01",
+    "area": "vendor",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X068",
+    "scenario": "vendor_match_02",
+    "area": "vendor",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X069",
+    "scenario": "vendor_match_03",
+    "area": "vendor",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X070",
+    "scenario": "vendor_match_04",
+    "area": "vendor",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X071",
+    "scenario": "vendor_match_05",
+    "area": "vendor",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X072",
+    "scenario": "vendor_match_06",
+    "area": "vendor",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X073",
+    "scenario": "vendor_match_07",
+    "area": "vendor",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X074",
+    "scenario": "vendor_match_08",
+    "area": "vendor",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X075",
+    "scenario": "vendor_match_09",
+    "area": "vendor",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X076",
+    "scenario": "vendor_match_10",
+    "area": "vendor",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X077",
+    "scenario": "vendor_match_11",
+    "area": "vendor",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X078",
+    "scenario": "vendor_match_12",
+    "area": "vendor",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X079",
+    "scenario": "vendor_match_13",
+    "area": "vendor",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X080",
+    "scenario": "vendor_match_14",
+    "area": "vendor",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X081",
+    "scenario": "vendor_match_15",
+    "area": "vendor",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X082",
+    "scenario": "vendor_match_16",
+    "area": "vendor",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X083",
+    "scenario": "vendor_match_17",
+    "area": "vendor",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X084",
+    "scenario": "vendor_match_18",
+    "area": "vendor",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X085",
+    "scenario": "vendor_match_19",
+    "area": "vendor",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X086",
+    "scenario": "payload_tax_00",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X087",
+    "scenario": "payload_hsn_00",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X088",
+    "scenario": "payload_tax_01",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X089",
+    "scenario": "payload_hsn_01",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X090",
+    "scenario": "payload_tax_02",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X091",
+    "scenario": "payload_hsn_02",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X092",
+    "scenario": "payload_tax_03",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X093",
+    "scenario": "payload_hsn_03",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X094",
+    "scenario": "payload_tax_04",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X095",
+    "scenario": "payload_hsn_04",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X096",
+    "scenario": "payload_tax_05",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X097",
+    "scenario": "payload_hsn_05",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X098",
+    "scenario": "payload_tax_06",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X099",
+    "scenario": "payload_hsn_06",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X100",
+    "scenario": "payload_tax_07",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X101",
+    "scenario": "payload_hsn_07",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X102",
+    "scenario": "payload_tax_08",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X103",
+    "scenario": "payload_hsn_08",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X104",
+    "scenario": "payload_tax_09",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X105",
+    "scenario": "payload_hsn_09",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X106",
+    "scenario": "payload_tax_10",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X107",
+    "scenario": "payload_hsn_10",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X108",
+    "scenario": "payload_tax_11",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X109",
+    "scenario": "payload_hsn_11",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X110",
+    "scenario": "payload_tax_12",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X111",
+    "scenario": "payload_hsn_12",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X112",
+    "scenario": "payload_tax_13",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X113",
+    "scenario": "payload_hsn_13",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X114",
+    "scenario": "payload_tax_14",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X115",
+    "scenario": "payload_hsn_14",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X116",
+    "scenario": "payload_tax_15",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X117",
+    "scenario": "payload_hsn_15",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X118",
+    "scenario": "payload_tax_16",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X119",
+    "scenario": "payload_hsn_16",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X120",
+    "scenario": "payload_tax_17",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X121",
+    "scenario": "payload_hsn_17",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X122",
+    "scenario": "payload_tax_18",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X123",
+    "scenario": "payload_hsn_18",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X124",
+    "scenario": "payload_tax_19",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X125",
+    "scenario": "payload_hsn_19",
+    "area": "payload",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X126",
+    "scenario": "overseas_fx_00",
+    "area": "fx",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X127",
+    "scenario": "rcm_id_00",
+    "area": "rcm",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X128",
+    "scenario": "overseas_fx_01",
+    "area": "fx",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X129",
+    "scenario": "rcm_id_01",
+    "area": "rcm",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X130",
+    "scenario": "overseas_fx_02",
+    "area": "fx",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X131",
+    "scenario": "rcm_id_02",
+    "area": "rcm",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X132",
+    "scenario": "overseas_fx_03",
+    "area": "fx",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X133",
+    "scenario": "rcm_id_03",
+    "area": "rcm",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X134",
+    "scenario": "overseas_fx_04",
+    "area": "fx",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X135",
+    "scenario": "rcm_id_04",
+    "area": "rcm",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X136",
+    "scenario": "overseas_fx_05",
+    "area": "fx",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X137",
+    "scenario": "rcm_id_05",
+    "area": "rcm",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X138",
+    "scenario": "overseas_fx_06",
+    "area": "fx",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X139",
+    "scenario": "rcm_id_06",
+    "area": "rcm",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X140",
+    "scenario": "overseas_fx_07",
+    "area": "fx",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X141",
+    "scenario": "rcm_id_07",
+    "area": "rcm",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X142",
+    "scenario": "overseas_fx_08",
+    "area": "fx",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X143",
+    "scenario": "rcm_id_08",
+    "area": "rcm",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X144",
+    "scenario": "overseas_fx_09",
+    "area": "fx",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X145",
+    "scenario": "rcm_id_09",
+    "area": "rcm",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X146",
+    "scenario": "verification_subtotal_00",
+    "area": "verification",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X147",
+    "scenario": "verification_subtotal_01",
+    "area": "verification",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X148",
+    "scenario": "verification_subtotal_02",
+    "area": "verification",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X149",
+    "scenario": "verification_subtotal_03",
+    "area": "verification",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X150",
+    "scenario": "verification_subtotal_04",
+    "area": "verification",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X151",
+    "scenario": "verification_subtotal_05",
+    "area": "verification",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X152",
+    "scenario": "verification_subtotal_06",
+    "area": "verification",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X153",
+    "scenario": "verification_subtotal_07",
+    "area": "verification",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X154",
+    "scenario": "verification_subtotal_08",
+    "area": "verification",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X155",
+    "scenario": "verification_subtotal_09",
+    "area": "verification",
+    "severity_if_failed": "S1",
+    "status": "PASS",
+    "expected": "",
+    "actual": "",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X156",
+    "scenario": "DEFECT_payable_ignored",
+    "area": "regression_expected_fail",
+    "severity_if_failed": "S1",
+    "status": "FAIL",
+    "expected": "False",
+    "actual": "True",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  },
+  {
+    "case_id": "X157",
+    "scenario": "DEFECT_subtotal_nonzero_difference",
+    "area": "regression_expected_fail",
+    "severity_if_failed": "S1",
+    "status": "FAIL",
+    "expected": "False",
+    "actual": "True",
+    "method": "isolated execution against live local zoho_bills.py on 21-Oct-2026"
+  }
+]

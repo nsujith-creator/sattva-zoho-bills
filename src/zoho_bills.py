@@ -845,6 +845,7 @@ def refresh_token():
 
 
 def get_usd_to_inr():
+    # Today's rate. main() no longer uses it (audit F08: invoice-date rates only).
     try:
         req = urllib.request.Request(
             "https://open.er-api.com/v6/latest/USD",
@@ -875,10 +876,10 @@ def resolve_effective_usd_rate(parsed, tax_route, bill_date, usd_rate, use_invoi
                                 run_id="unset", filename=""):
     """Resolve the USD/INR rate to use for one bill's FX conversion.
 
-    usd_rate is the run-level rate already resolved by the caller (either the
-    --usd-rate override or a get_usd_to_inr() result). When use_invoice_date_fx
-    is set and the bill is an overseas USD bill, the invoice-date rate is tried
-    first and wins; usd_rate is the fallback on any fetch failure.
+    usd_rate is an explicit --usd-rate override, or None. When use_invoice_date_fx
+    is set and the bill is an overseas USD bill, the rate is the one on the
+    invoice date. If that fetch fails the rate is None and the caller holds the
+    bill for review; it never falls back to another day's rate (audit F08).
 
     Returns (effective_rate, is_usd_overseas).
     """
@@ -893,7 +894,7 @@ def resolve_effective_usd_rate(parsed, tax_route, bill_date, usd_rate, use_invoi
         except Exception as _fx_e:
             obs_print("FX_RATE_FETCH_FAILED",
                       f"run_id={run_id} file={filename} date={bill_date} error={str(_fx_e)[:80]}")
-            effective_rate = usd_rate
+            effective_rate = None
     return effective_rate, is_usd_overseas
 
 
@@ -1710,11 +1711,14 @@ def build_payload(parsed, vendor_id, tax_route, usd_rate=None):
         rate = round(rate * usd_rate, 2) if needs_fx else round(rate, 2)
         li = {"description": desc, "quantity": 1, "rate": rate,
               "account_id": "914109000000000567"}
-        raw_hsn = re.sub(r"[^0-9]", "", str(item.get("hsn_or_sac", "") or ""))[:8]
-        # Zoho India requires HSN/SAC to be exactly 4, 6, or 8 digits.
-        # 7-digit codes (common in Blinkit product invoices) are rejected with error 2207.
-        # Drop invalid lengths rather than sending a code Zoho will reject.
-        if raw_hsn and len(raw_hsn) in (4, 6, 8):
+        raw_hsn = re.sub(r"[^0-9]", "", str(item.get("hsn_or_sac", "") or ""))
+        # Zoho India requires HSN/SAC to be exactly 4, 6, or 8 digits (error 2207;
+        # 7-digit codes are common in Blinkit product invoices). An invalid code is a
+        # misread or a wrong code, so hold the bill for review instead of dropping
+        # or truncating it (audit F07).
+        if raw_hsn:
+            if len(raw_hsn) not in (4, 6, 8):
+                raise ValueError(f"hsn_or_sac_invalid:{raw_hsn[:12]}")
             li["hsn_or_sac"] = raw_hsn
         if not is_overseas and tax_mode in ("cgst_sgst", "igst"):
             item_tax_key, _ = _domestic_line_tax_key(item, tax_mode)
@@ -2021,7 +2025,9 @@ def main():
                 print(f"[USD_RATE] run_id={run_id} ERROR: --usd-rate value must be a number, got {args[idx + 1]!r}")
                 return
 
-    use_invoice_date_fx = "--use-invoice-date-fx" in args
+    # Audit F08: overseas USD bills use their invoice-date rate unless a human
+    # passes --usd-rate. (--use-invoice-date-fx is now the default and a no-op.)
+    use_invoice_date_fx = usd_rate_override is None
 
     approve_mode = "--approve" in args
     approver = ""
@@ -2181,11 +2187,9 @@ def main():
         print(f"  Parse cache loaded: {len(parse_cache)} valid entries.\n")
         approval_queue = load_approval_queue(run_id=run_id)
 
+        usd_rate = usd_rate_override
         if usd_rate_override is not None:
-            usd_rate = usd_rate_override
             obs_print("USD_RATE_OVERRIDE", f"run_id={run_id} usd_rate={usd_rate}")
-        else:
-            usd_rate = get_usd_to_inr()
 
         # Only "verified" is success (audit F03); there is deliberately no "created" list.
         run_log = {"run_id": run_id, "verified": [], "post_verify_failed": [], "awaiting_approval": [],
@@ -2874,9 +2878,27 @@ def _business_test():
                 {"description": "Professional service consulting fee",
                  "rate": 20, "hsn_or_sac": "123456"},
             ])
+            # Audit F07: an invalid HSN/SAC holds the bill instead of being dropped.
+            try:
+                build_payload(p, "VENDOR1", domestic_route)
+                raise AssertionError("7-digit HSN accepted")
+            except ValueError as e:
+                assert str(e) == "hsn_or_sac_invalid:1234567"
+            p = parsed_base(line_items=[
+                {"description": "Professional service consulting fee",
+                 "rate": 10, "hsn_or_sac": "9965110000"}])
+            try:
+                build_payload(p, "VENDOR1", domestic_route)
+                raise AssertionError("10-digit HSN truncated instead of held")
+            except ValueError as e:
+                assert str(e) == "hsn_or_sac_invalid:9965110000"
+            p = parsed_base(line_items=[
+                {"description": "Professional service consulting fee",
+                 "rate": 20, "hsn_or_sac": "SAC 9983 13"},
+                {"description": "Professional service consulting fee", "rate": 5}])
             payload = build_payload(p, "VENDOR1", domestic_route)
-            assert "hsn_or_sac" not in payload["line_items"][0]
-            assert payload["line_items"][1].get("hsn_or_sac") == "123456"
+            assert payload["line_items"][0].get("hsn_or_sac") == "998313"
+            assert "hsn_or_sac" not in payload["line_items"][1]
 
         def verify_payload():
             return {
@@ -3323,7 +3345,22 @@ def _business_test():
             finally:
                 globals()["fetch_usd_inr_rate_for_date"] = old_fetch
 
-        def t_resolve_effective_usd_rate_fallback_on_fetch_failure():
+        def t_resolve_effective_usd_rate_override_skips_fetch():
+            old_fetch = globals()["fetch_usd_inr_rate_for_date"]
+
+            def forbidden(date_str):
+                raise AssertionError("invoice-date fetch despite an explicit --usd-rate")
+
+            globals()["fetch_usd_inr_rate_for_date"] = forbidden
+            try:
+                rate, is_usd_overseas = resolve_effective_usd_rate(
+                    parsed_base(currency_code="USD"), {"is_overseas": True}, "2026-05-01",
+                    usd_rate=80, use_invoice_date_fx=False)
+                assert (rate, is_usd_overseas) == (80, True)
+            finally:
+                globals()["fetch_usd_inr_rate_for_date"] = old_fetch
+
+        def t_resolve_effective_usd_rate_no_fallback_on_fetch_failure():
             old_fetch = globals()["fetch_usd_inr_rate_for_date"]
 
             def failing_fetch(date_str):
@@ -3334,9 +3371,10 @@ def _business_test():
                 overseas = {"is_overseas": True}
                 p = parsed_base(currency_code="USD")
                 rate, is_usd_overseas = resolve_effective_usd_rate(
-                    p, overseas, "2026-05-01", usd_rate=80, use_invoice_date_fx=True)
+                    p, overseas, "2026-05-01", usd_rate=None, use_invoice_date_fx=True)
                 assert is_usd_overseas is True
-                assert rate == 80, f"expected fallback to --usd-rate value 80, got {rate!r}"
+                # Audit F08: no fallback to another day's rate; the bill is held.
+                assert rate is None, f"expected no rate on fetch failure, got {rate!r}"
             finally:
                 globals()["fetch_usd_inr_rate_for_date"] = old_fetch
 
@@ -3376,7 +3414,8 @@ def _business_test():
               "KNOWN_OPEN_WATCHER_LOCK_SCOPE_DEFERRED_PHASE_4")
         check("resolve_effective_usd_rate_invoice_date_fx", t_resolve_effective_usd_rate_invoice_date_fx)
         check("resolve_effective_usd_rate_inr_skips_fetch", t_resolve_effective_usd_rate_inr_skips_fetch)
-        check("resolve_effective_usd_rate_fallback_on_fetch_failure", t_resolve_effective_usd_rate_fallback_on_fetch_failure)
+        check("resolve_effective_usd_rate_override_skips_fetch", t_resolve_effective_usd_rate_override_skips_fetch)
+        check("resolve_effective_usd_rate_no_fallback_on_fetch_failure", t_resolve_effective_usd_rate_no_fallback_on_fetch_failure)
     finally:
         urllib.request.urlopen = _orig_urlopen
         globals()["zoho_get"] = _orig_zoho_get

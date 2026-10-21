@@ -89,15 +89,15 @@ def write_watcher_heartbeat(status="running", extra=None):
 def enforce_test_gate():
     """
     Runs MBL extraction test harness before watcher starts.
-    If any test fails, watcher refuses to start.
-    Skips silently if test suite not yet installed.
+    If the harness is missing or fails, the watcher refuses to start (audit F10).
+    The harness itself fails when pdftotext or any fixture is missing.
     """
     test_script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "test", "run_tests.py")
 
     if not os.path.exists(test_script):
-        print(f"[INFO] Test harness not found at {test_script} - skipping preflight")
-        return  # Non-blocking until test suite is deployed
+        print(f"\nPREFLIGHT FAILED - test harness not found at {test_script}")
+        sys.exit(1)
 
     result = subprocess.run(
         [PYTHON_EXE, test_script],
@@ -107,7 +107,7 @@ def enforce_test_gate():
 
     if result.returncode != 0:
         print("\nPREFLIGHT FAILED - WATCHER WILL NOT START")
-        print("   Fix extraction issues in extract_mbl.py then restart.\n")
+        print(f"   Run {test_script} to see which check failed, fix it, then restart.\n")
         sys.exit(1)
 
     print("Preflight passed - watcher starting\n")
@@ -1346,11 +1346,25 @@ def run_self_tests():
             test_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test", "run_tests.py")
             subprocess.run = fake_preflight_run
             os.path.exists = lambda path: True if path == test_script else original_os_path_exists(path)
-    # enforce_test_gate disabled: prevents visible startup subprocess flash
+            enforce_test_gate()
             assert preflight_calls == [(
                 [PYTHON_EXE, test_script],
                 {"capture_output": False, "creationflags": hidden_flags},
             )]
+            # Audit F10: a failing or missing harness stops the watcher.
+            FakeReturnCode.returncode = 1
+            try:
+                enforce_test_gate()
+                raise AssertionError("watcher started after a failing preflight")
+            except SystemExit as e:
+                assert e.code == 1
+            FakeReturnCode.returncode = 0
+            os.path.exists = lambda path: False if path == test_script else original_os_path_exists(path)
+            try:
+                enforce_test_gate()
+                raise AssertionError("watcher started without its test harness")
+            except SystemExit as e:
+                assert e.code == 1
             subprocess.run = original_subprocess_run
             os.path.exists = original_os_path_exists
 
@@ -1404,7 +1418,8 @@ def run_self_tests():
 if __name__ == "__main__":
     if "--test" in sys.argv[1:]:
         sys.exit(run_self_tests())
-    # enforce_test_gate() disabled: was spawning visible startup subprocesses
+    # Audit F10: the gate runs again; CREATE_NO_WINDOW keeps it from flashing a console.
+    enforce_test_gate()
     try:
         run_watcher()
     finally:

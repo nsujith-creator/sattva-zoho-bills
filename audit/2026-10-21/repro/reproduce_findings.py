@@ -94,11 +94,14 @@ def domestic_invoice(**overrides):
 
 def zoho_bill_for(parsed, vendor_id, **overrides):
     """A Zoho GET /bills/{id} response that matches the parsed invoice."""
+    tax = sum(float(parsed.get(f) or 0) for f in ("tax_amount_igst", "tax_amount_cgst", "tax_amount_sgst"))
     bill = {
         "bill_id": "900000000001", "bill_number": parsed["bill_number"],
-        "vendor_id": vendor_id, "date": parsed["bill_date"],
-        "sub_total": parsed["subtotal"], "total": parsed["invoice_total"],
-        "is_reverse_charge_applied": False, "line_items": [],
+        "vendor_id": vendor_id, "date": parsed["bill_date"], "currency_code": "INR",
+        "sub_total": parsed["subtotal"], "tax_total": round(tax, 2), "total": parsed["invoice_total"],
+        "is_reverse_charge_applied": False,
+        "line_items": [{"rate": li["rate"], "quantity": 1, "tax_id": zb.get_tax_id("cgst_sgst_18")}
+                       for li in parsed["line_items"]],
     }
     bill.update(overrides)
     return bill
@@ -214,29 +217,39 @@ def statuses(result):
 
 
 # ── Pipeline checks (real main(), faked externals) ─────────────────────────────
+def verify_errors(r):
+    return " ".join(e.get("error", "") for e in r["invoice_log"] if e.get("status") == "post_verify_failed")
+
+
 def check_f04_f01_f02():
     parsed = domestic_invoice()
-    # Zoho stores a subtotal ₹2,900 off and a total ₹6,45,999 off the invoice.
-    bill = zoho_bill_for(parsed, "9001", sub_total=302900.00, total=999999.00)
-    unapproved = run_pipeline(parsed, bill)
+    exact = zoho_bill_for(parsed, "9001")
+    unapproved = run_pipeline(parsed, exact)
     # Simulate a re-extraction that yields a different payload for the same PDF.
     os.remove(os.path.join(unapproved["tmp"], "parsed_cache.json"))
-    changed = run_pipeline(dict(parsed, due_date="2026-12-31"), bill,
+    changed = run_pipeline(dict(parsed, due_date="2026-12-31"), exact,
                            approver="Audit Reviewer", tmp=unapproved["tmp"])
     posted = len(unapproved["posts"]) + len(changed["posts"])
     record("F04", "DEFECT" if posted else "FAIL-SAFE",
            "Exact-name, reconciled bill is POSTed with no human approval step",
            f"no approval -> posts={len(unapproved['posts'])} status={statuses(unapproved)}; "
            f"approval of a payload that changed since review -> posts={len(changed['posts'])}")
-    r = run_approved(parsed, bill)
-    verified = "POST_VERIFY_PASSED" in r["stdout"]
-    record("F01", "DEFECT" if verified else "FAIL-SAFE",
+
+    control = "POST_VERIFY_PASSED" in run_approved(parsed, exact)["stdout"]
+    # Zoho stores a total ₹6,45,999 off the printed ₹3,54,000.
+    f01 = run_approved(parsed, zoho_bill_for(parsed, "9001", total=999999.00))
+    f01_passed = "POST_VERIFY_PASSED" in f01["stdout"]
+    record("F01", "DEFECT" if f01_passed or not control else "FAIL-SAFE",
            "Read-back verification passes although Zoho total differs from printed total",
-           f"printed total=354000.00 zoho total=999999.00 -> verify passed={verified}; "
-           f"invoice_log statuses={statuses(r)}")
-    record("F02", "DEFECT" if verified else "FAIL-SAFE",
+           f"exact read-back verified={control}; printed total=354000.00 zoho total=999999.00 -> "
+           f"verify passed={f01_passed}; errors={verify_errors(f01)[:90]!r}")
+    # ₹2,900 on a ₹3,00,000 bill sat inside the old 1% band.
+    f02 = run_approved(parsed, zoho_bill_for(parsed, "9001", sub_total=302900.00, total=356900.00))
+    f02_passed = "POST_VERIFY_PASSED" in f02["stdout"]
+    record("F02", "DEFECT" if f02_passed or not control else "FAIL-SAFE",
            "Subtotal off by ₹2,900 on a ₹3,00,000 bill is accepted (1% tolerance)",
-           "expected sub_total=300000.00 zoho sub_total=302900.00 -> tolerance 3000.00")
+           f"expected sub_total=300000.00 zoho sub_total=302900.00 -> verify passed={f02_passed}; "
+           f"errors={verify_errors(f02)[:90]!r}")
 
 
 def check_f03():

@@ -160,4 +160,8 @@ Upload that JSON and those PDFs to the review session, without committing either
   - `verified` is the only success status.
 
   `repro/reproduce_findings.py` reports both as FAIL-SAFE, and `tests/test_approval_boundary.py` covers the AGENTS.md cases.
-
+- **F01 and F02 are fixed.**
+  - Read-back now compares currency, each line's amount and tax code, and `sub_total` exactly against the posted payload.
+  - It compares `tax_total` and `total` against the printed invoice within ₹0.01 per line.
+  - For reverse-charge bills, it checks `total` against the pre-tax payable and each line's 18% reverse-charge amount.
+  - The old `max(₹1, 1%)` tolerance is gone. `repro/reproduce_findings.py` reports both as FAIL-SAFE.

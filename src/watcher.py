@@ -138,6 +138,50 @@ def _process_exists(pid):
     return f'"{pid}"' in result.stdout
 
 
+_WATCHER_GUARD_HANDLE = None
+
+
+def acquire_watcher_guard():
+    """Hold an exclusive Windows kernel byte lock for the process lifetime.
+
+    Separate from watcher.lock (legacy PID file): this serializes even
+    simultaneous stale-PID recovery and is released automatically on crash.
+    """
+    global _WATCHER_GUARD_HANDLE
+    if _WATCHER_GUARD_HANDLE is not None:
+        return True
+    if os.name != "nt":
+        raise RuntimeError("watcher guard requires Windows")
+    import msvcrt
+    handle = open(LOCK_FILE + ".guard", "a+b")
+    try:
+        handle.seek(0)
+        if handle.read(1) == b"":
+            handle.seek(0)
+            handle.write(b"1")
+            handle.flush()
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        handle.close()
+        return False
+    _WATCHER_GUARD_HANDLE = handle
+    return True
+
+
+def release_watcher_guard():
+    global _WATCHER_GUARD_HANDLE
+    handle = _WATCHER_GUARD_HANDLE
+    _WATCHER_GUARD_HANDLE = None
+    if handle is not None:
+        try:
+            import msvcrt
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            handle.close()
+
+
 def cleanup_watcher_lock():
     """Remove watcher.lock only when it belongs to this process."""
     try:
@@ -755,6 +799,9 @@ def run_for_file(filename, run_id):
 
 # Main watcher loop
 def run_watcher():
+    if not acquire_watcher_guard():
+        print('Watcher already running (OS lock held).')
+        sys.exit(0)
     # Write lock
     try:
         with open(LOCK_FILE, "x") as f:
@@ -1424,3 +1471,4 @@ if __name__ == "__main__":
         run_watcher()
     finally:
         cleanup_watcher_lock()
+        release_watcher_guard()

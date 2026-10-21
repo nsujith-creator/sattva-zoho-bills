@@ -165,3 +165,12 @@ Upload that JSON and those PDFs to the review session, without committing either
   - It compares `tax_total` and `total` against the printed invoice within ₹0.01 per line.
   - For reverse-charge bills, it checks `total` against the pre-tax payable and each line's 18% reverse-charge amount.
   - The old `max(₹1, 1%)` tolerance is gone. `repro/reproduce_findings.py` reports both as FAIL-SAFE.
+- **The RCM total assumption is confirmed.** All 16 reverse-charge bills in the read-only export have `total = sub_total`.
+- **A5, F05 and F06 are fixed.**
+  - **A5:** an Indian GSTIN on the vendor master or the invoice blocks reverse charge (review instead), and vendor-name signals match whole words only.
+  - **F05:** duplicates are keyed by vendor and bill number. A format variant, or a bill with no vendor on record, goes to review.
+  - **F06:** a multi-invoice PDF is held for review with every invoice kept, including in the parse cache.
+
+  `repro/reproduce_findings.py` now reports A5, F01–F06 and F09 as FAIL-SAFE.
+- **Still open: 25 `skipped_duplicate` entries whose PDF total did not match Zoho.** Under the old global dedupe, each one's Zoho "match" may belong to another vendor. Any whose Zoho vendor differs from the PDF's supplier is a bill that was never entered.
+

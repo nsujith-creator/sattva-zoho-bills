@@ -112,8 +112,10 @@ def run_pipeline(parsed, existing=None, preview=False, post=None, loaded_vendors
             # Exercise real duplicate loading rather than assuming the returned set.
             def fake_get(endpoint, params=None):
                 if endpoint == "bills":
-                    return {"bills": [{"bill_number": number} for number in (existing or [])],
-                            "page_context": {"has_more_page": False}}
+                    # A bare number is an existing Maersk bill; pass dicts for other vendors.
+                    bills = [n if isinstance(n, dict) else {"bill_number": n, "vendor_id": MAERSK_ID}
+                             for n in (existing or [])]
+                    return {"bills": bills, "page_context": {"has_more_page": False}}
                 if readback is not None and endpoint.startswith("bills/"):
                     return {"bill": copy.deepcopy(readback)}
                 raise AssertionError(endpoint)

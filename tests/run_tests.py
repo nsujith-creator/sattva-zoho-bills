@@ -1,7 +1,8 @@
 """
-Zoho MBL Extraction Test Harness
-If pdftotext is not installed, skips tests and allows watcher to start.
-Exit 0 = PASS or SKIPPED. Exit 1 = FAIL.
+Zoho MBL Extraction Test Harness (the watcher's preflight gate)
+Exit 0 only if pdftotext is installed and every expected fixture extracts
+correctly. A missing tool, expectation file or fixture fails, and so does
+running zero tests (audit F10). Exit 1 = FAIL.
 """
 
 import os
@@ -10,6 +11,8 @@ import json
 import subprocess
 
 sys.path.insert(0, r"C:\temp\zoho")
+# Repository layout: tests/run_tests.py next to src/zoho_bills.py.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 
 def pdftotext_available():
@@ -30,13 +33,19 @@ def run_tests() -> bool:
     print("="*55 + "\n")
 
     if not pdftotext_available():
-        print("  [INFO] pdftotext not installed on this machine.")
-        print("  [INFO] Skipping extraction tests — watcher will start.")
-        print("  [INFO] To enable tests: install poppler for Windows")
+        print("  FAIL - pdftotext is not installed, so production MBL and CMA CGM")
+        print("         checks cannot run. Install poppler for Windows and add its")
+        print("         bin folder to PATH:")
         print("         https://github.com/oschwartz10612/poppler-windows/releases")
-        print("\n  SKIPPED - SAFE TO START")
+        print("\n  TESTS FAILED - DO NOT START")
         print("="*55 + "\n")
-        return True
+        return False
+
+    if not os.path.exists(EXPECTATION_FILE):
+        print(f"  FAIL - expectation file missing: {EXPECTATION_FILE}")
+        print("\n  TESTS FAILED - DO NOT START")
+        print("="*55 + "\n")
+        return False
 
     from zoho_bills import extract_mbl_from_pdf_text, extract_text_from_pdf
 
@@ -51,7 +60,10 @@ def run_tests() -> bool:
         file_path = os.path.join(TEST_DIR, filename)
 
         if not os.path.exists(file_path):
-            print(f"  [SKIP] Missing test file: {filename}")
+            print(f"  FAIL {filename}")
+            print(f"       Fixture missing: {file_path}")
+            total += 1
+            failed_cases.append((filename, expected_mbl, "<fixture missing>"))
             continue
 
         pdf_text = extract_text_from_pdf(file_path)
@@ -72,6 +84,12 @@ def run_tests() -> bool:
 
     print("="*55)
     print(f"  Results: {passed}/{total} passed")
+
+    if total == 0:
+        print("\n  FAIL - no extraction tests ran")
+        print("  TESTS FAILED - DO NOT START")
+        print("="*55 + "\n")
+        return False
 
     if failed_cases:
         print(f"  Failed : {len(failed_cases)}")

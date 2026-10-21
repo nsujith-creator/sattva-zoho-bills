@@ -1,4 +1,5 @@
-"""Tax route (audit A5), vendor-scoped duplicates (F05) and multi-invoice PDFs (F06).
+"""Tax route (audit A5), vendor-scoped duplicates (F05), multi-invoice PDFs (F06),
+HSN/SAC codes (F07) and invoice-date exchange rates (F08).
 
 Runs the real main() loop offline through the shared harness and checks that each
 risky case stops before the approval queue, while legitimate bills still reach it.
@@ -136,6 +137,66 @@ class MultiInvoiceTests(unittest.TestCase):
         result = self.parse([approvable_invoice()])
         self.assertEqual(result["bill_number"], BILL_NUMBER)
         self.assertNotIn("multi_invoice_count", result)
+
+
+class HsnTests(unittest.TestCase):
+    def test_invalid_hsn_holds_the_bill(self):
+        for code in ("1234567", "9965110000", "998313/996719"):
+            with self.subTest(code=code):
+                parsed = approvable_invoice()
+                parsed["line_items"][0]["hsn_or_sac"] = code
+                log, posts, _, _ = run_pipeline(parsed)
+                self.assertEqual(posts, 0)
+                self.assertEqual(log["awaiting_approval"], [])
+                self.assertTrue(log["needs_review"][0]["reason"].startswith("hsn_or_sac_invalid:"))
+
+    def test_valid_or_absent_hsn_reaches_approval(self):
+        parsed = approvable_invoice()
+        parsed["line_items"][0]["hsn_or_sac"] = "SAC 9967 19"
+        with tempfile.TemporaryDirectory(prefix="zoho-hsn-test-") as folder:
+            log, posts, _, _ = run_pipeline(parsed, folder=folder)
+            queue = json.loads(Path(folder, "APPROVAL_QUEUE_PATH.json").read_text(encoding="utf-8"))
+        self.assertEqual(posts, 0)
+        self.assertEqual(len(log["awaiting_approval"]), 1)
+        lines = next(iter(queue.values()))["payload"]["line_items"]
+        self.assertEqual(lines[0]["hsn_or_sac"], "996719")
+        self.assertNotIn("hsn_or_sac", lines[1])
+
+
+class InvoiceDateFxTests(unittest.TestCase):
+    VENDORS = {"ANTHROPIC PBC": {"id": "anthropic", "gst_no": ""}}
+
+    def usd_invoice(self):
+        return {"vendor_name": "ANTHROPIC PBC", "vendor_gstin": "", "bill_number": "INV-2026-0042",
+                "bill_date": "2026-04-01", "due_date": None, "mbl_number": "", "currency_code": "USD",
+                "is_overseas": True, "confidence": "high", "notes": "",
+                "line_items": [{"description": "Claude Team plan", "quantity": 1, "rate": 100.0,
+                                "hsn_or_sac": "998315"}],
+                "subtotal": 100.0, "discounts_or_credits": 0, "tax_amount_igst": 0,
+                "tax_amount_cgst": 0, "tax_amount_sgst": 0, "invoice_total": 100.0}
+
+    def test_bill_uses_its_invoice_date_rate(self):
+        dates = []
+
+        def rate_on(date):
+            dates.append(date)
+            return 84.25
+
+        with patch.object(zb, "fetch_usd_inr_rate_for_date", rate_on), \
+                tempfile.TemporaryDirectory(prefix="zoho-fx-test-") as folder:
+            log, posts, _, _ = run_pipeline(self.usd_invoice(), loaded_vendors=self.VENDORS, folder=folder)
+            queue = json.loads(Path(folder, "APPROVAL_QUEUE_PATH.json").read_text(encoding="utf-8"))
+        self.assertEqual(dates, ["2026-04-01"])
+        self.assertEqual(len(log["awaiting_approval"]), 1)
+        self.assertEqual(next(iter(queue.values()))["payload"]["line_items"][0]["rate"], 8425.0)
+
+    def test_failed_invoice_date_rate_holds_the_bill(self):
+        # The harness blocks the network, so the invoice-date fetch fails. Today's
+        # rate must not be used instead.
+        log, posts, _, _ = run_pipeline(self.usd_invoice(), loaded_vendors=self.VENDORS)
+        self.assertEqual(posts, 0)
+        self.assertEqual(log["awaiting_approval"], [])
+        self.assertEqual(log["needs_review"][0]["reason"], "fx_rate_unavailable")
 
 
 if __name__ == "__main__":

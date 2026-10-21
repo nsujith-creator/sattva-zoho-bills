@@ -15,6 +15,7 @@ Usage (from the repository root, Linux/macOS only for pipeline checks):
 import contextlib
 import copy
 import importlib.util
+import inspect
 import io
 import json
 import os
@@ -368,9 +369,16 @@ def payload_line(**item):
     return zb.build_payload(parsed, "9001", route)["line_items"][0]
 
 
+def hsn_outcome(code):
+    try:
+        return payload_line(hsn_or_sac=code).get("hsn_or_sac")
+    except ValueError as e:
+        return f"held for review ({e})"
+
+
 def check_f07():
-    seven = payload_line(hsn_or_sac="1234567").get("hsn_or_sac")
-    ten = payload_line(hsn_or_sac="9965110000").get("hsn_or_sac")
+    seven = hsn_outcome("1234567")
+    ten = hsn_outcome("9965110000")
     record("F07", "DEFECT" if seven is None or ten == "99651100" else "FAIL-SAFE",
            "Invalid HSN/SAC is silently dropped or truncated instead of routed to review",
            f"7-digit '1234567' -> {seven!r}; 10-digit '9965110000' -> {ten!r}")
@@ -398,15 +406,16 @@ def check_a5_substring():
 
 
 def check_f08():
+    # The network is blocked, so the invoice-date fetch fails here.
     rate, _ = zb.resolve_effective_usd_rate(
-        {"currency_code": "USD"}, {"is_overseas": True}, "2026-04-01", 83.0, False)
-    spawn = re.search(r'\[PYTHON_EXE, MAIN_SCRIPT, "--file"[^\]]*\]',
-                      (SRC / "watcher.py").read_text(encoding="utf-8")).group(0)
-    uses_flag = "--use-invoice-date-fx" in spawn
-    record("F08", "DEFECT" if not uses_flag and rate == 83.0 else "FAIL-SAFE",
+        {"currency_code": "USD"}, {"is_overseas": True}, "2026-04-01", 83.0, True)
+    main_src = inspect.getsource(zb.main)
+    uses_today = "get_usd_to_inr()" in main_src
+    opt_in = '"--use-invoice-date-fx" in args' in main_src
+    record("F08", "DEFECT" if uses_today or opt_in or rate == 83.0 else "FAIL-SAFE",
            "Watcher runs use the processing-day USD rate, not the invoice-date rate",
-           f"watcher spawn args: {spawn}; without the flag a 2026-04-01 bill uses "
-           f"the run-level rate {rate}")
+           f"main() fetches today's rate={uses_today}; invoice-date rate is opt-in={opt_in}; "
+           f"failed invoice-date fetch -> rate={rate} (None = bill held for review)")
 
 
 def check_overseas_skips_reconcile():
@@ -429,7 +438,7 @@ def check_a1_f10():
         re.search(r"^\s+enforce_test_gate\(\)", main_block, re.M) is None
     tests = (ROOT / "tests" / "run_tests.py").read_text(encoding="utf-8")
     vacuous = "SKIPPED - SAFE TO START" in tests
-    record("F10", "DEFECT" if gate_off else "FAIL-SAFE",
+    record("F10", "DEFECT" if gate_off or vacuous else "FAIL-SAFE",
            "Watcher preflight gate is disabled, and would pass vacuously if re-enabled",
            f"enforce_test_gate() call commented out in watcher __main__={gate_off}; "
            f"run_tests.py returns success when pdftotext is missing={vacuous}")

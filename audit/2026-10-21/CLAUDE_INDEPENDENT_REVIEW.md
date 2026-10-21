@@ -172,5 +172,17 @@ Upload that JSON and those PDFs to the review session, without committing either
   - **F06:** a multi-invoice PDF is held for review with every invoice kept, including in the parse cache.
 
   `repro/reproduce_findings.py` now reports A5, F01–F06 and F09 as FAIL-SAFE.
-- **Still open: 25 `skipped_duplicate` entries whose PDF total did not match Zoho.** Under the old global dedupe, each one's Zoho "match" may belong to another vendor. Any whose Zoho vendor differs from the PDF's supplier is a bill that was never entered.
+- **F05 caused no missing bills in the retained log.** The user checked all 35 retained `skipped_duplicate` entries (23 distinct PDF/bill pairs) against their Zoho matches:
+  - Supplier name matched in 35 of 35, invoice number was present in 35 of 35, and date matched in 35 of 35.
+  - GSTIN matched in all 10 entries that carry one.
+  - No entry's Zoho match belongs to another supplier.
+
+  The 25 total mismatches are therefore not bills that were never entered. F05 was a real defect, but the retained log shows no harm from it. Evidence: `LEGACY_DUPLICATE_35_IDENTITY_AUDIT.json` on the Windows machine.
+- **F07, F08 and F10 are fixed.**
+  - **F07:** an HSN/SAC code that isn't 4, 6 or 8 digits holds the bill for review. The `[:8]` truncation is gone.
+  - **F08:** overseas USD bills always use the invoice-date rate. A failed fetch goes to review instead of falling back to today's rate. `--usd-rate` remains as an explicit override.
+  - **F10:** the watcher runs the preflight gate again. A missing harness, missing `pdftotext`, missing expectation file, missing fixture or zero tests all stop it from starting.
+
+  `repro/reproduce_findings.py` now reports every finding except A1 as FAIL-SAFE.
+- **Still open:** A1 (the watcher-lock self-test is `assert True`), A4, A6, F12, F14, F17, F18, F19, and F20, the PDF-to-Zoho reconciliation of the 49 bills whose PDF total was not found.
 

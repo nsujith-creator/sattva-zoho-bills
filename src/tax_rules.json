@@ -1,0 +1,62 @@
+{
+  "tax_id_map": {
+    "cgst_sgst_18": "914109000000014276",
+    "cgst_sgst_5": "914109000000014264",
+    "igst_18": "914109000000014234",
+    "igst_5": "914109000000014230"
+  },
+  "igst_vendors": [
+    "CMA CGM",
+    "CCAI",
+    "MAERSK",
+    "FACEBOOK",
+    "META",
+    "ZOHO",
+    "GOOGLE INDIA"
+  ],
+  "overseas_vendor_signals": [
+    "ANTHROPIC",
+    "AWS",
+    "AMAZON WEB",
+    "MICROSOFT",
+    "AZURE",
+    "ADOBE",
+    "OPENAI",
+    "GITHUB",
+    "VERCEL",
+    "NETLIFY",
+    "DIGITALOCEAN",
+    "CLOUDFLARE",
+    "FIGMA",
+    "NOTION",
+    "DROPBOX",
+    "SLACK",
+    "ZOOM",
+    "ATLASSIAN",
+    "STRIPE",
+    "NAMECHEAP",
+    "GODADDY",
+    "HOSTINGER",
+    "SENDINBLUE",
+    "BREVO"
+  ],
+  "freight_keywords": [
+    "FREIGHT CHARGES",
+    "AIRFREIGHT",
+    "O/F",
+    "BASIC OCEAN FREIGHT",
+    "OCEAN FRT",
+    "SEA FRT",
+    "AIR FRT",
+    "EXPORT FREIGHT",
+    "IMPORT FREIGHT",
+    "INTERNATIONAL FREIGHT",
+    "FREIGHT COLLECT",
+    "FREIGHT PREPAID",
+    "OCEAN FREIGHT",
+    "SEA FREIGHT",
+    "FREIGHT CHARGE",
+    "AIR FREIGHT",
+    "BASIC FREIGHT"
+  ]
+}

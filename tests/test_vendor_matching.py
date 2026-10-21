@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import zoho_bills as zb
 
 
@@ -55,6 +55,84 @@ def invoice():
     }
 
 
+def approvable_invoice():
+    """Exact master name and keyword-consistent rates: the path that used to auto-post."""
+    parsed = invoice()
+    parsed["vendor_name"] = "MAERSK A/S"
+    parsed["line_items"][3]["description"] = "Ocean Freight - Bunker"
+    return parsed
+
+
+def run_pipeline(parsed, existing=None, preview=False, post=None, loaded_vendors=None,
+                 source_path=None, approver=None, folder=None, readback=None):
+    """Run the actual main loop with isolated state and blocked network.
+
+    folder keeps state (approval queue, ledger, logs) across runs; approver adds
+    --approve --approver NAME; readback is the bill returned by GET bills/{id}.
+    """
+    with (contextlib.nullcontext(folder) if folder else
+          tempfile.TemporaryDirectory(prefix="zoho-vendor-test-")) as tmp:
+        folder = Path(tmp)
+        source = Path(source_path) if source_path else folder / "sample.pdf"
+        if not source_path:
+            source.write_bytes(b"%PDF offline fixture; extraction supplied from cache")
+        file_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+        cache = {file_hash: zb._make_cache_entry(copy.deepcopy(parsed), file_hash)}
+        state_paths = {name: str(folder / (name + ".json")) for name in (
+            "LOG_PATH", "CACHE_PATH", "INVOICE_LOG_PATH", "FAILED_INVOICES_PATH",
+            "RUN_MANIFEST_PATH", "AUDIT_BASELINE_PATH", "DAILY_METRICS_PATH", "SYSTEM_HEALTH_PATH",
+            "APPROVAL_QUEUE_PATH", "APPROVALS_PATH")}
+        real_open, real_remove = open, os.remove
+        lock_path = r"C:\temp\zoho\zoho.lock"
+
+        def isolated_open(path, *args, **kwargs):
+            return real_open(str(folder / "zoho.lock") if str(path) == lock_path else path,
+                             *args, **kwargs)
+
+        def isolated_remove(path, *args, **kwargs):
+            return real_remove(str(folder / "zoho.lock") if str(path) == lock_path else path,
+                               *args, **kwargs)
+
+        tax_rules = {"tax_id_map": zb._DEFAULT_TAX_ID_MAP,
+                     "igst_vendors": zb._DEFAULT_IGST_VENDORS,
+                     "overseas_vendor_signals": list(zb._DEFAULT_OVERSEAS_VENDOR_SIGNALS),
+                     "_source": "offline_test"}
+        output = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.multiple(zb, **state_paths))
+            stack.enter_context(patch("builtins.open", side_effect=isolated_open))
+            stack.enter_context(patch.object(zb.os, "remove", side_effect=isolated_remove))
+            stack.enter_context(patch.object(zb.urllib.request, "urlopen", side_effect=AssertionError("Network forbidden")))
+            stack.enter_context(patch.object(zb, "refresh_token"))
+            stack.enter_context(patch.object(zb, "notify"))
+            stack.enter_context(patch.object(zb.time, "sleep"))
+            stack.enter_context(patch.object(zb, "load_tax_rules", return_value=tax_rules))
+            stack.enter_context(patch.object(zb, "load_vendor_rules", return_value={"vendor_alias_map": {}, "_source": "offline_test"}))
+            stack.enter_context(patch.object(zb, "fetch_tax_ids_from_zoho", side_effect=lambda rules, **kw: rules))
+            # Exercise real duplicate loading rather than assuming the returned set.
+            def fake_get(endpoint, params=None):
+                if endpoint == "bills":
+                    return {"bills": [{"bill_number": number} for number in (existing or [])],
+                            "page_context": {"has_more_page": False}}
+                if readback is not None and endpoint.startswith("bills/"):
+                    return {"bill": copy.deepcopy(readback)}
+                raise AssertionError(endpoint)
+            stack.enter_context(patch.object(zb, "zoho_get", side_effect=fake_get))
+            stack.enter_context(patch.object(zb, "fetch_vendors", return_value=loaded_vendors or vendors()))
+            stack.enter_context(patch.object(zb, "_load_parse_cache", return_value=cache))
+            stack.enter_context(patch.object(zb, "extract_text_from_pdf", return_value=""))
+            stack.enter_context(patch.object(zb, "get_usd_to_inr", return_value=None))
+            parser = stack.enter_context(patch.object(zb, "parse_pdf_with_claude", return_value=copy.deepcopy(parsed)))
+            poster = stack.enter_context(patch.object(zb, "zoho_post", side_effect=post or AssertionError("Unapproved POST forbidden")))
+            args = [zb.__file__, "--file", str(source)] + (["--preview"] if preview else [])
+            args += ["--approve", "--approver", approver] if approver else []
+            stack.enter_context(patch.object(sys, "argv", args))
+            stack.enter_context(contextlib.redirect_stdout(output))
+            zb.main()
+            log = json.loads(Path(zb.LOG_PATH).read_text(encoding="utf-8"))
+            return log, poster.call_count, parser.call_count, output.getvalue()
+
+
 class VendorMatchingTests(unittest.TestCase):
     def test_fetch_keeps_same_name_registrations_across_pages(self):
         responses = [
@@ -90,63 +168,8 @@ class VendorMatchingTests(unittest.TestCase):
             self.assertEqual(zb.match_vendor_tiered("Agent", vendors(), GSTIN)[0:3],
                              (MAERSK_ID, "MAERSK A/S", "alias"))
 
-    def run_pipeline(self, parsed, existing=None, preview=False, post=None, loaded_vendors=None,
-                     source_path=None):
-        """Run the actual main loop with isolated state and blocked network."""
-        with tempfile.TemporaryDirectory(prefix="zoho-vendor-test-") as tmp:
-            folder = Path(tmp)
-            source = Path(source_path) if source_path else folder / "sample.pdf"
-            if not source_path:
-                source.write_bytes(b"%PDF offline fixture; extraction supplied from cache")
-            file_hash = hashlib.sha256(source.read_bytes()).hexdigest()
-            cache = {file_hash: zb._make_cache_entry(copy.deepcopy(parsed), file_hash)}
-            state_paths = {name: str(folder / (name + ".json")) for name in (
-                "LOG_PATH", "CACHE_PATH", "INVOICE_LOG_PATH", "FAILED_INVOICES_PATH",
-                "RUN_MANIFEST_PATH", "AUDIT_BASELINE_PATH", "DAILY_METRICS_PATH", "SYSTEM_HEALTH_PATH")}
-            real_open, real_remove = open, os.remove
-            lock_path = r"C:\temp\zoho\zoho.lock"
-
-            def isolated_open(path, *args, **kwargs):
-                return real_open(str(folder / "zoho.lock") if str(path) == lock_path else path,
-                                 *args, **kwargs)
-
-            def isolated_remove(path, *args, **kwargs):
-                return real_remove(str(folder / "zoho.lock") if str(path) == lock_path else path,
-                                   *args, **kwargs)
-
-            tax_rules = {"tax_id_map": zb._DEFAULT_TAX_ID_MAP,
-                         "igst_vendors": zb._DEFAULT_IGST_VENDORS,
-                         "overseas_vendor_signals": list(zb._DEFAULT_OVERSEAS_VENDOR_SIGNALS),
-                         "_source": "offline_test"}
-            output = io.StringIO()
-            with contextlib.ExitStack() as stack:
-                stack.enter_context(patch.multiple(zb, **state_paths))
-                stack.enter_context(patch("builtins.open", side_effect=isolated_open))
-                stack.enter_context(patch.object(zb.os, "remove", side_effect=isolated_remove))
-                stack.enter_context(patch.object(zb.urllib.request, "urlopen", side_effect=AssertionError("Network forbidden")))
-                stack.enter_context(patch.object(zb, "refresh_token"))
-                stack.enter_context(patch.object(zb, "notify"))
-                stack.enter_context(patch.object(zb.time, "sleep"))
-                stack.enter_context(patch.object(zb, "load_tax_rules", return_value=tax_rules))
-                stack.enter_context(patch.object(zb, "load_vendor_rules", return_value={"vendor_alias_map": {}, "_source": "offline_test"}))
-                stack.enter_context(patch.object(zb, "fetch_tax_ids_from_zoho", side_effect=lambda rules, **kw: rules))
-                # Exercise real duplicate loading rather than assuming the returned set.
-                stack.enter_context(patch.object(zb, "zoho_get", side_effect=lambda endpoint, params=None: {
-                    "bills": [{"bill_number": number} for number in (existing or [])],
-                    "page_context": {"has_more_page": False},
-                } if endpoint == "bills" else (_ for _ in ()).throw(AssertionError(endpoint))))
-                stack.enter_context(patch.object(zb, "fetch_vendors", return_value=loaded_vendors or vendors()))
-                stack.enter_context(patch.object(zb, "_load_parse_cache", return_value=cache))
-                stack.enter_context(patch.object(zb, "extract_text_from_pdf", return_value=""))
-                stack.enter_context(patch.object(zb, "get_usd_to_inr", return_value=None))
-                parser = stack.enter_context(patch.object(zb, "parse_pdf_with_claude", return_value=copy.deepcopy(parsed)))
-                poster = stack.enter_context(patch.object(zb, "zoho_post", side_effect=post or AssertionError("Unapproved POST forbidden")))
-                args = [zb.__file__, "--file", str(source)] + (["--preview"] if preview else [])
-                stack.enter_context(patch.object(sys, "argv", args))
-                stack.enter_context(contextlib.redirect_stdout(output))
-                zb.main()
-                log = json.loads(Path(zb.LOG_PATH).read_text(encoding="utf-8"))
-                return log, poster.call_count, parser.call_count, output.getvalue()
+    def run_pipeline(self, *args, **kwargs):
+        return run_pipeline(*args, **kwargs)
 
     def test_clean_invoice_resolves_vendor_but_requires_approval(self):
         parsed = invoice()
@@ -184,10 +207,8 @@ class VendorMatchingTests(unittest.TestCase):
 
     def test_retry_after_remote_success_is_duplicate(self):
         # Exercise a response lost AFTER the simulated server has stored the bill.
-        # Use the unchanged exact/legacy path to reach the fake server.
-        parsed = invoice()
-        parsed["vendor_name"] = "MAERSK A/S"
-        parsed["line_items"][3]["description"] = "Ocean Freight - Bunker"
+        # Reaching the fake server now takes a queued proposal plus an approval.
+        parsed = approvable_invoice()
         remote_bills = set()
 
         def store_then_disconnect(endpoint, payload):
@@ -195,13 +216,17 @@ class VendorMatchingTests(unittest.TestCase):
             remote_bills.add(payload["bill_number"])
             raise TimeoutError("response lost after server committed")
 
-        log, posts, parses, _ = self.run_pipeline(parsed, existing=remote_bills, post=store_then_disconnect)
+        with tempfile.TemporaryDirectory(prefix="zoho-vendor-test-") as folder:
+            log, posts, _, _ = self.run_pipeline(parsed, folder=folder)
+            self.assertEqual((posts, len(log["awaiting_approval"])), (0, 1))
+            log, posts, parses, _ = self.run_pipeline(parsed, existing=remote_bills, post=store_then_disconnect,
+                                                      approver="Test Approver", folder=folder)
         self.assertEqual((posts, parses), (1, 0))
-        self.assertEqual(log["created"], [])
+        self.assertEqual(log["verified"], [])
         self.assertIn("response lost", log["failed"][0]["error"])
         self.assertEqual(remote_bills, {parsed["bill_number"]})
-        for _ in range(2):
-            log, posts, parses, _ = self.run_pipeline(parsed, existing=remote_bills)
+        for approver in (None, "Test Approver"):
+            log, posts, parses, _ = self.run_pipeline(parsed, existing=remote_bills, approver=approver)
             self.assertEqual(len(log["skipped_duplicate"]), 1)
             self.assertEqual((posts, parses), (0, 0))
 
@@ -211,7 +236,7 @@ class VendorMatchingTests(unittest.TestCase):
         self.assertIn('"vendor_id": "' + MAERSK_ID + '"', output)
         self.assertIn('[PREVIEW] would POST:', output)
         self.assertEqual((posts, parses), (0, 0))
-        self.assertEqual(log["created"], [])
+        self.assertEqual(log["verified"], [])
         route = zb.determine_tax_route(parsed, "MAERSK A/S", GSTIN)
         payload = zb.build_payload(parsed, MAERSK_ID, route)
         self.assertEqual(parsed["line_items"][3]["tax_percentage"], 5)

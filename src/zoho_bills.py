@@ -22,6 +22,13 @@ SESSION 3 STATE FILE ATOMICITY & CACHE INTEGRITY (April 2026):
 - _load_state_list(): recovers corrupt/missing list files with STATE_RECOVERY
 - _append_json_list(): atomic append with MAX_LOG_ENTRIES=500 size cap
 - Removed old filename-keyed cache lookups and bare open() cache writes
+
+AUDIT FIXES (October 2026):
+- F04: no POST without a recorded approval. Normal runs queue the exact payload
+  in approval_queue.json; `--file PDF --approve --approver NAME` posts it only if
+  the rebuilt payload is identical, after appending to approvals.json
+- F03: "verified" is the only success status; a failed read-back is logged
+  post_verify_failed and is never reported to the watcher as created
 """
 
 import json
@@ -76,6 +83,8 @@ DAILY_METRICS_PATH  = r"C:\temp\zoho\daily_metrics.json"
 SYSTEM_HEALTH_PATH  = r"C:\temp\zoho\system_health.json"
 TAX_RULES_PATH    = r"C:\temp\zoho\tax_rules.json"
 VENDOR_RULES_PATH = r"C:\temp\zoho\vendor_rules.json"
+APPROVAL_QUEUE_PATH = r"C:\temp\zoho\approval_queue.json"
+APPROVALS_PATH      = r"C:\temp\zoho\approvals.json"
 
 DEFAULT_ORG_ID      = "60015023876"
 DEFAULT_ZOHO_DOMAIN = "https://www.zohoapis.in"
@@ -1728,6 +1737,59 @@ def append_failed_invoice(file, bill_number, mbl_number, error, run_id=""):
     }, run_id=run_id, label="failed_invoices.json")
 
 
+# ── Approval boundary (audit F04) ─────────────────────────────────────────────
+# AGENTS.md: human approval is mandatory before posting. A normal run only
+# queues the exact payload it would POST. `--approve --approver NAME --file PDF`
+# posts only if it rebuilds the identical payload for the identical PDF, and
+# records who approved what before the POST is sent.
+def payload_digest(payload):
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def load_approval_queue(run_id="unset"):
+    """Proposals keyed by PDF SHA-256. Unreadable means nothing is approvable."""
+    if not os.path.exists(APPROVAL_QUEUE_PATH):
+        return {}
+    data, err = safe_json_read(APPROVAL_QUEUE_PATH)
+    if data is None:
+        obs_print("STATE_RECOVERY",
+                  f"run_id={run_id} file=approval_queue.json reason={err} action=start_empty")
+        return {}
+    return data
+
+
+def save_approval_queue(queue, run_id="unset"):
+    ok, err = atomic_json_write(APPROVAL_QUEUE_PATH, queue)
+    if not ok:
+        obs_print("STATE_WRITE_FAILED",
+                  f"run_id={run_id} file=approval_queue.json reason={err}")
+    return ok
+
+
+def record_approval(entry, run_id="unset"):
+    """
+    Append to the approvals ledger. Uncapped and never reset: if the existing
+    ledger cannot be read or the write fails, return False and do not POST.
+    """
+    approvals = []
+    if os.path.exists(APPROVALS_PATH):
+        try:
+            with open(APPROVALS_PATH, encoding="utf-8-sig") as f:
+                approvals = json.load(f)
+        except Exception as e:
+            obs_print("APPROVAL_LEDGER_UNREADABLE", f"run_id={run_id} reason={str(e)[:80]}")
+            return False
+        if not isinstance(approvals, list):
+            obs_print("APPROVAL_LEDGER_UNREADABLE", f"run_id={run_id} reason=not_a_list")
+            return False
+    approvals.append(entry)
+    ok, err = atomic_json_write(APPROVALS_PATH, approvals)
+    if not ok:
+        obs_print("STATE_WRITE_FAILED", f"run_id={run_id} file=approvals.json reason={err}")
+    return ok
+
+
 # ── Validation ────────────────────────────────────────────────────────────────
 def validate_before_post(parsed, vendor_id):
     if not vendor_id:
@@ -1924,6 +1986,21 @@ def main():
 
     use_invoice_date_fx = "--use-invoice-date-fx" in args
 
+    approve_mode = "--approve" in args
+    approver = ""
+    if "--approver" in args:
+        idx = args.index("--approver")
+        if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
+            approver = args[idx + 1].strip()
+    if approve_mode:
+        # One named person approves one reviewed file at a time.
+        if not approver:
+            print(f"[APPROVE] run_id={run_id} ERROR: --approve requires --approver NAME")
+            return
+        if args.count("--file") != 1 or preview_mode:
+            print(f"[APPROVE] run_id={run_id} ERROR: --approve requires exactly one --file and no --preview")
+            return
+
     LOCK_PATH = r"C:\temp\zoho\zoho.lock"
     LOCK_MAX_AGE = 600
     _lock_payload = json.dumps({"run_id": run_id, "timestamp": time.time()})
@@ -2065,6 +2142,7 @@ def main():
         # ── Session 3: Load parse cache via hardened helper ───────────────────
         parse_cache = _load_parse_cache(run_id=run_id)
         print(f"  Parse cache loaded: {len(parse_cache)} valid entries.\n")
+        approval_queue = load_approval_queue(run_id=run_id)
 
         if usd_rate_override is not None:
             usd_rate = usd_rate_override
@@ -2072,8 +2150,11 @@ def main():
         else:
             usd_rate = get_usd_to_inr()
 
-        run_log = {"run_id": run_id, "created": [], "skipped_duplicate": [], "needs_review": [], "failed": []}
+        # Only "verified" is success (audit F03); there is deliberately no "created" list.
+        run_log = {"run_id": run_id, "verified": [], "post_verify_failed": [], "awaiting_approval": [],
+                   "skipped_duplicate": [], "needs_review": [], "failed": []}
         skipped = created = errors = review = 0
+        verified = verify_failed = awaiting = 0
         cache_hits = cache_misses = ai_calls = 0
         review_reasons = {"vendor_match_review": 0, "tax_route_review": 0, "low_confidence_review": 0}
         error_classes  = {"AUTH_ERROR": 0, "PARSE_ERROR": 0, "TAX_ERROR": 0, "POST_ERROR": 0}
@@ -2311,34 +2392,94 @@ def main():
                 review += 1
                 review_reasons["vendor_match_review"] += 1
                 continue
+            digest = payload_digest(payload)
             if preview_mode:
                 print("         [PREVIEW] reconciliation (human approval still required):\n"
                       + json.dumps(tax_check, indent=2))
                 print("         [PREVIEW] would POST:\n" + json.dumps(payload, indent=2))
+                print(f"         [PREVIEW] payload_sha256={digest}")
                 obs_print("PREVIEW_PAYLOAD", f"run_id={run_id} file={filename} bill_number={bill_no}")
                 continue
+            queued = approval_queue.get(file_hash)
+            if not approve_mode or not isinstance(queued, dict) or queued.get("payload_sha256") != digest:
+                if not approve_mode:
+                    reason = "awaiting_approval"
+                elif isinstance(queued, dict):
+                    reason = "approval_rejected:payload_changed_since_review"
+                else:
+                    reason = "approval_rejected:no_reviewed_proposal"
+                approval_queue[file_hash] = {
+                    "file": filename, "pdf_sha256": file_hash, "bill_number": bill_no,
+                    "vendor_id": vendor_id, "vendor": matched_name, "payload_sha256": digest,
+                    "payload": payload, "reconciliation": tax_check,
+                    "proposed_at": datetime.datetime.now().isoformat(), "run_id": run_id,
+                }
+                save_approval_queue(approval_queue, run_id=run_id)
+                print(f"         AWAITING APPROVAL - {reason} payload_sha256={digest[:12]}\n"
+                      f"         Review : python zoho_bills.py --file \"{filepath}\" --preview\n"
+                      f"         Approve: python zoho_bills.py --file \"{filepath}\" --approve --approver \"NAME\"\n")
+                obs_print("APPROVAL_REQUIRED",
+                          f"run_id={run_id} file={filename} reason={reason} payload_sha256={digest[:12]}")
+                run_log["awaiting_approval"].append({
+                    "file": filename, "bill_number": bill_no, "reason": reason,
+                    "payload_sha256": digest, "run_id": run_id})
+                append_invoice_log(filename, bill_no, mbl_no, matched_name, bill_date,
+                                   "awaiting_approval", reason, run_id=run_id)
+                notify("Bill Ready for Approval", filename + ": Checks passed. Review and approve to post.")
+                awaiting += 1
+                continue
+            approval = {
+                "pdf_sha256": file_hash, "file": filename, "bill_number": bill_no,
+                "vendor_id": vendor_id, "vendor": matched_name, "payload_sha256": digest,
+                "approved_by": approver,
+                "os_user": os.environ.get("USERNAME") or os.environ.get("USER", ""),
+                "approved_at": datetime.datetime.now().isoformat(), "run_id": run_id,
+            }
+            if not record_approval(approval, run_id=run_id):
+                err = "approval_ledger_write_failed"
+                print(f"         FAILED - {err}; nothing posted\n")
+                run_log["failed"].append({"file": filename, "bill_number": bill_no, "error": err, "run_id": run_id})
+                append_invoice_log(filename, bill_no, mbl_no, vendor_n, bill_date, "failed", err, run_id=run_id)
+                errors += 1
+                continue
+            obs_print("APPROVAL_RECORDED",
+                      f"run_id={run_id} file={filename} approved_by={approver!r} payload_sha256={digest[:12]}")
             obs_print("POST_STARTED", f"run_id={run_id} file={filename} bill_number={bill_no}")
             try:
                 result  = zoho_post("bills", payload)
                 bid     = extract_created_bill_id(result)
                 if not bid:
                     raise Exception("Zoho POST response missing a valid bill_id")
-                print(f"         CREATED - Zoho Bill ID: {bid}\n")
-                obs_print("POST_COMPLETED", f"run_id={run_id} file={filename} bill_id={bid} status=created")
-                run_log["created"].append({"file": filename, "bill_number": bill_no, "bill_id": bid, "run_id": run_id})
-                append_invoice_log(filename, bill_no, mbl_no, vendor_n, bill_date, "created", run_id=run_id)
+                print(f"         POSTED - Zoho Bill ID: {bid} (verifying)")
+                obs_print("POST_COMPLETED", f"run_id={run_id} file={filename} bill_id={bid} status=posted_unverified")
+                existing_bills.add(bill_no.upper())
+                created += 1
+                approval_queue.pop(file_hash, None)
+                save_approval_queue(approval_queue, run_id=run_id)
+                # Durable trace that the bill exists before read-back runs (audit F03).
+                append_invoice_log(filename, bill_no, mbl_no, vendor_n, bill_date,
+                                   "posted_unverified", f"bill_id={bid}", run_id=run_id)
                 verify_result = verify_created_bill(
                     bid, payload, parsed, run_id=run_id, filename=filename,
                     usd_rate=effective_usd_rate if tax_route["is_overseas"] else None)
-                if not verify_result["ok"]:
+                if verify_result["ok"]:
+                    print(f"         VERIFIED - Zoho Bill ID: {bid}\n")
+                    run_log["verified"].append({"file": filename, "bill_number": bill_no, "bill_id": bid, "run_id": run_id})
+                    append_invoice_log(filename, bill_no, mbl_no, vendor_n, bill_date,
+                                       "verified", f"bill_id={bid}", run_id=run_id)
+                    verified += 1
+                else:
                     verify_detail = "; ".join(verify_result.get("errors", []))[:500]
+                    print(f"         POST-VERIFY FAILED - Zoho Bill ID: {bid}: {verify_detail}\n")
+                    run_log["post_verify_failed"].append({
+                        "file": filename, "bill_number": bill_no, "bill_id": bid,
+                        "error": verify_detail, "run_id": run_id})
                     append_invoice_log(
                         filename, bill_no, mbl_no, vendor_n, bill_date,
                         "post_verify_failed", verify_detail, run_id=run_id)
-                    notify("Zoho Bill Verification Warning",
-                           filename + ": Created bill verification failed. Check Zoho manually.")
-                existing_bills.add(bill_no.upper())
-                created += 1
+                    notify("Zoho Bill Verification Failed",
+                           filename + ": Posted bill does not match. Check Zoho now.")
+                    verify_failed += 1
             except Exception as e:
                 err = str(e)
                 print(f"         FAILED - {err}\n")
@@ -2365,6 +2506,9 @@ def main():
             "timestamp":      datetime.datetime.now().isoformat(),
             "total_files":    _total,
             "created":        created,
+            "verified":       verified,
+            "verify_failed":  verify_failed,
+            "awaiting_approval": awaiting,
             "skipped":        skipped,
             "review":         review,
             "errors":         errors,
@@ -2398,16 +2542,24 @@ def main():
         print("\n" + "=" * 62)
         print("  SUMMARY")
         print(f"  run_id          : {run_id}")
-        print(f"  Created in Zoho : {created}")
+        print(f"  Posted to Zoho  : {created}")
+        print(f"  Verified        : {verified}")
+        print(f"  Verify failed   : {verify_failed}")
+        print(f"  Awaiting approval: {awaiting}")
         print(f"  Skipped (dupes) : {skipped}")
         print(f"  Needs review    : {review}")
         print(f"  Errors          : {errors}")
         print(f"  Log             : {LOG_PATH}")
         print("=" * 62)
-        obs_print("RUN_COMPLETED", f"run_id={run_id} created={created} skipped={skipped} review={review} errors={errors}")
+        obs_print("RUN_COMPLETED", f"run_id={run_id} created={created} verified={verified} "
+                  f"verify_failed={verify_failed} awaiting_approval={awaiting} "
+                  f"skipped={skipped} review={review} errors={errors}")
 
-        if created:
-            notify("Zoho Bills", f"{created} new bill(s) created in Zoho successfully.")
+        if verified:
+            notify("Zoho Bills", f"{verified} bill(s) posted and verified in Zoho.")
+        if verify_failed:
+            notify("Zoho Bills Verification Failed",
+                   f"{verify_failed} posted bill(s) did not match on read-back. Check Zoho now.")
         if errors:
             notify("Zoho Pipeline Error", f"{errors} bill(s) failed. Check watcher.log.")
 

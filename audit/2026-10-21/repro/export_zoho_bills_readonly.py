@@ -27,6 +27,8 @@ FINGERPRINTS = ROOT / "audit" / "2026-10-21" / "LIVE_SOURCE_FINGERPRINTS.json"
 # invoice_log statuses whose bill must be checked in Zoho, and why.
 STATUSES = {
     "created": "posted by the pipeline: needs PDF parity (F20)",
+    "verified": "posted with an approval and passed read-back: needs PDF parity (F20)",
+    "posted_unverified": "posted; read-back never completed (F03)",
     "post_verify_failed": "posted but failed read-back (F03)",
     "failed": "POST may have succeeded before a timeout (F14)",
     "skipped_duplicate": "matched an existing number, possibly another vendor's (F05)",
@@ -49,7 +51,7 @@ def load_pipeline(path):
     expected = json.loads(FINGERPRINTS.read_text(encoding="utf-8"))["zoho_bills.py"]
     actual = hashlib.sha256(path.read_bytes()).hexdigest().upper()
     if actual != expected:
-        print(f"WARNING: {path} SHA-256 {actual} does not match the audited fingerprint")
+        print(f"NOTE: {path} differs from the audited fingerprint (expected once fixes are merged)")
     spec = importlib.util.spec_from_file_location("zoho_bills_readonly", path)
     zb = importlib.util.module_from_spec(spec)
     with contextlib.redirect_stdout(io.StringIO()):
@@ -123,7 +125,8 @@ def main():
                         "zoho_bill_ids": [b.get("bill_id") for b in found]})
 
     pdfs = sorted({m["invoice_log"]["file"] for m in matches
-                   if m["invoice_log"]["status"] in ("created", "post_verify_failed", "failed")
+                   if m["invoice_log"]["status"] in ("created", "verified", "posted_unverified",
+                                                   "post_verify_failed", "failed")
                    and m["zoho_bill_ids"]})
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     out_path = Path.cwd() / f"zoho_audit_export_{stamp}.json"

@@ -337,8 +337,8 @@ def notify_needs_review(filename, reason):
 
 
 def should_mark_seen(status):
-    """Only completed creation or confirmed duplicates are terminal."""
-    return status in ("created", "skipped")
+    """Only a verified bill or a confirmed duplicate is terminal (audit F03)."""
+    return status in ("verified", "skipped")
 
 
 # Seen-files tracker
@@ -593,7 +593,7 @@ def _reconcile_seen_files_core(seen, invoice_log, existing_bills):
         latest = latest_by_file.get(filename)
         if not latest:
             continue
-        if latest.get("status") != "created":
+        if latest.get("status") not in ("created", "verified"):
             continue
         bill_number = str(latest.get("bill_number") or "").strip()
         if not bill_number:
@@ -667,7 +667,9 @@ def run_for_file(filename, run_id):
     """
     Run zoho_bills.py and parse its output to find the result for this file.
     Passes --run-id so zoho_bills.py can tag all its log events with this run_id.
-    Returns (status, detail) where status in: created / skipped / needs_review / failed / error
+    Returns (status, detail) where status in: verified / post_verify_failed /
+    awaiting_approval / skipped / needs_review / failed / error. The watcher never
+    passes --approve, so it can never post a bill (audit F04).
     """
     filepath = os.path.join(BILL_FOLDER, filename)
     SUBPROCESS_TIMEOUT = 240  # seconds - kills hung API calls
@@ -703,9 +705,17 @@ def run_for_file(filename, run_id):
             with open(run_log_path, encoding="utf-8") as f:
                 run_log = json.load(f)
 
-            for entry in run_log.get("created", []):
+            for entry in run_log.get("verified", []):
                 if entry.get("file") == filename:
-                    return "created", f"Bill ID: {entry.get('bill_id','')} | Bill#: {entry.get('bill_number','')}"
+                    return "verified", f"Bill ID: {entry.get('bill_id','')} | Bill#: {entry.get('bill_number','')}"
+
+            for entry in run_log.get("post_verify_failed", []):
+                if entry.get("file") == filename:
+                    return "post_verify_failed", f"Bill ID: {entry.get('bill_id','')} | {entry.get('error','')}"
+
+            for entry in run_log.get("awaiting_approval", []):
+                if entry.get("file") == filename:
+                    return "awaiting_approval", entry.get("reason", "awaiting_approval")
 
             for entry in run_log.get("skipped_duplicate", []):
                 if entry.get("file") == filename:
@@ -884,20 +894,21 @@ def run_watcher():
                         log(f"  [QUOTA_HOLD_ACTIVATED] file={filename} {_quota_reason}")
                     log(f"  Result: {status} | {detail}")
 
-                    if status == "created":
+                    if status == "verified":
                         # Parse vendor from detail or invoice_log
                         vendor = ""
+                        bill_no = detail
                         try:
                             inv_log_path = r"C:\temp\zoho\invoice_log.json"
                             with open(inv_log_path, encoding="utf-8") as f:
                                 inv_log = json.load(f)
                             for entry in reversed(inv_log):
-                                if entry.get("file") == filename and entry.get("status") == "created":
+                                if entry.get("file") == filename and entry.get("status") == "verified":
                                     vendor = entry.get("vendor", "")
                                     bill_no = entry.get("bill_number", "")
                                     break
                         except Exception:
-                            bill_no = detail
+                            pass
                         notify_success(filename, bill_no, vendor)
 
                     elif status == "skipped":
@@ -906,6 +917,15 @@ def run_watcher():
                     elif status == "needs_review":
                         notify_needs_review(filename, detail)
                         log(f"  [RETRY_PENDING_REVIEW] file={filename} reason={detail}")
+
+                    elif status == "awaiting_approval":
+                        notify_needs_review(filename, f"Ready for approval: {detail}")
+                        log(f"  [AWAITING_APPROVAL] file={filename} reason={detail}")
+
+                    elif status in ("post_verify_failed", "posted_unverified"):
+                        # Posted but not proven correct: never terminal (audit F03).
+                        notify_error(filename, f"Posted to Zoho but read-back failed: {detail}")
+                        log(f"  [POST_VERIFY_FAILED] file={filename} detail={detail}")
 
                     elif status in ("failed", "error"):
                         notify_error(filename, detail)
@@ -1011,7 +1031,11 @@ def run_self_tests():
             assert quota_hold_reason(load_quota_hold(), now=quota_now) is not None
             assert quota_hold_reason(quota_hold, now=quota_hold["resume_at_epoch"]) is None
 
-            assert should_mark_seen("created") is True
+            assert should_mark_seen("verified") is True
+            assert should_mark_seen("created") is False
+            assert should_mark_seen("post_verify_failed") is False
+            assert should_mark_seen("posted_unverified") is False
+            assert should_mark_seen("awaiting_approval") is False
             assert should_mark_seen("skipped") is True
             assert should_mark_seen("needs_review") is False
             assert should_mark_seen("failed") is False

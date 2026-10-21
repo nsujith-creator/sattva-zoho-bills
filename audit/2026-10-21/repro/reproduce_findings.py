@@ -104,13 +104,19 @@ def zoho_bill_for(parsed, vendor_id, **overrides):
     return bill
 
 
-def run_pipeline(parsed, zoho_bill, existing_bills=(), usd_rate=83.0):
-    """Run zoho_bills.main() for one PDF with every external call faked."""
-    tmp = tempfile.mkdtemp(prefix="zoho_audit_repro_")
-    TEMP_DIRS.append(tmp)
+def run_pipeline(parsed, zoho_bill, existing_bills=(), usd_rate=83.0, approver=None, tmp=None):
+    """Run zoho_bills.main() for one PDF with every external call faked.
+
+    Pass the previous result's tmp to keep state (approval queue, logs) and the
+    same PDF across runs; approver adds --approve --approver NAME.
+    """
+    if tmp is None:
+        tmp = tempfile.mkdtemp(prefix="zoho_audit_repro_")
+        TEMP_DIRS.append(tmp)
     pdf = os.path.join(tmp, "invoice.pdf")
-    with open(pdf, "wb") as f:
-        f.write(b"%PDF-1.4 audit placeholder " + os.urandom(8))
+    if not os.path.exists(pdf):
+        with open(pdf, "wb") as f:
+            f.write(b"%PDF-1.4 audit placeholder " + os.urandom(8))
     posts = []
 
     def fake_post(endpoint, payload):
@@ -119,7 +125,8 @@ def run_pipeline(parsed, zoho_bill, existing_bills=(), usd_rate=83.0):
 
     state = {name: os.path.join(tmp, name + ".json") for name in (
         "run_log", "parsed_cache", "invoice_log", "failed_invoices",
-        "run_manifest", "audit_baseline", "daily_metrics", "system_health")}
+        "run_manifest", "audit_baseline", "daily_metrics", "system_health",
+        "approval_queue", "approvals")}
     fakes = {
         "LOG_PATH": state["run_log"], "CACHE_PATH": state["parsed_cache"],
         "INVOICE_LOG_PATH": state["invoice_log"],
@@ -128,6 +135,8 @@ def run_pipeline(parsed, zoho_bill, existing_bills=(), usd_rate=83.0):
         "AUDIT_BASELINE_PATH": state["audit_baseline"],
         "DAILY_METRICS_PATH": state["daily_metrics"],
         "SYSTEM_HEALTH_PATH": state["system_health"],
+        "APPROVAL_QUEUE_PATH": state["approval_queue"],
+        "APPROVALS_PATH": state["approvals"],
         "TAX_RULES_PATH": str(SRC / "tax_rules.json"),
         "VENDOR_RULES_PATH": str(SRC / "vendor_rules.json"),
         "refresh_token": lambda: None,
@@ -147,8 +156,9 @@ def run_pipeline(parsed, zoho_bill, existing_bills=(), usd_rate=83.0):
         for attr, value in fakes.items():
             stack.enter_context(mock.patch.object(zb, attr, value))
         stack.enter_context(mock.patch.object(zb.time, "sleep", lambda s: None))
-        stack.enter_context(mock.patch.object(
-            sys, "argv", ["zoho_bills.py", "--file", pdf, "--run-id", "AUDIT-REPRO"]))
+        argv = ["zoho_bills.py", "--file", pdf, "--run-id", "AUDIT-REPRO"]
+        argv += ["--approve", "--approver", approver] if approver else []
+        stack.enter_context(mock.patch.object(sys, "argv", argv))
         os.chdir(tmp)
         try:
             with contextlib.redirect_stdout(out):
@@ -165,7 +175,14 @@ def run_pipeline(parsed, zoho_bill, existing_bills=(), usd_rate=83.0):
 
     run_log = read(state["run_log"], {})
     return {"tmp": tmp, "file": "invoice.pdf", "posts": posts, "run_log": run_log,
-            "invoice_log": read(state["invoice_log"], []), "stdout": out.getvalue()}
+            "invoice_log": read(state["invoice_log"], []), "stdout": out.getvalue(),
+            "approval_queue": read(state["approval_queue"], {})}
+
+
+def run_approved(parsed, zoho_bill, **kwargs):
+    """Queue the proposal, then approve it: the only path to zoho_post after F04."""
+    first = run_pipeline(parsed, zoho_bill, **kwargs)
+    return run_pipeline(parsed, zoho_bill, approver="Audit Reviewer", tmp=first["tmp"], **kwargs)
 
 
 def watcher_status(result):
@@ -201,11 +218,17 @@ def check_f04_f01_f02():
     parsed = domestic_invoice()
     # Zoho stores a subtotal ₹2,900 off and a total ₹6,45,999 off the invoice.
     bill = zoho_bill_for(parsed, "9001", sub_total=302900.00, total=999999.00)
-    r = run_pipeline(parsed, bill)
-    posted = len(r["posts"]) == 1
+    unapproved = run_pipeline(parsed, bill)
+    # Simulate a re-extraction that yields a different payload for the same PDF.
+    os.remove(os.path.join(unapproved["tmp"], "parsed_cache.json"))
+    changed = run_pipeline(dict(parsed, due_date="2026-12-31"), bill,
+                           approver="Audit Reviewer", tmp=unapproved["tmp"])
+    posted = len(unapproved["posts"]) + len(changed["posts"])
     record("F04", "DEFECT" if posted else "FAIL-SAFE",
            "Exact-name, reconciled bill is POSTed with no human approval step",
-           f"zoho_post calls={len(r['posts'])}; AGENTS.md requires approval before every post")
+           f"no approval -> posts={len(unapproved['posts'])} status={statuses(unapproved)}; "
+           f"approval of a payload that changed since review -> posts={len(changed['posts'])}")
+    r = run_approved(parsed, bill)
     verified = "POST_VERIFY_PASSED" in r["stdout"]
     record("F01", "DEFECT" if verified else "FAIL-SAFE",
            "Read-back verification passes although Zoho total differs from printed total",
@@ -219,15 +242,16 @@ def check_f04_f01_f02():
 def check_f03():
     parsed = domestic_invoice(bill_number="SCS/2026/0418")
     bill = zoho_bill_for(parsed, "9001", date="2026-09-01")  # wrong date in Zoho
-    r = run_pipeline(parsed, bill)
+    r = run_approved(parsed, bill)
     log = statuses(r)
-    in_created = any(e.get("file") == r["file"] for e in r["run_log"].get("created", []))
+    success_keys = [k for k in ("created", "verified")
+                    if any(e.get("file") == r["file"] for e in r["run_log"].get(k, []))]
     w_status, w_detail = watcher_status(r)
-    defect = (log[:2] == ["created", "post_verify_failed"] and in_created
-              and w_status == "created" and watcher.should_mark_seen(w_status))
+    defect = (bool(r["posts"]) and (bool(success_keys) or {"created", "verified"} & set(log)
+                                    or watcher.should_mark_seen(w_status)))
     record("F03", "DEFECT" if defect else "FAIL-SAFE",
            "A bill that fails read-back verification is reported 'created' and marked done",
-           f"invoice_log={log}; run_log.created has file={in_created}; "
+           f"posts={len(r['posts'])}; invoice_log={log}; run_log success lists with file={success_keys}; "
            f"watcher status={w_status!r} -> should_mark_seen={watcher.should_mark_seen(w_status)}")
 
 
@@ -257,12 +281,14 @@ def check_a5_usd_domestic_vendor():
                          line_items=[{"reverse_charge_tax_id": "914109000000014234",
                                       "reverse_charge_tax_amount": 14940.0}])
     r = run_pipeline(parsed, bill, usd_rate=83.0)
-    payload = r["posts"][0]["payload"] if r["posts"] else {}
+    proposals = list(r["approval_queue"].values())
+    payload = r["posts"][0]["payload"] if r["posts"] else (proposals[0]["payload"] if proposals else {})
     rcm = payload.get("is_reverse_charge_applied") is True
     record("A5", "DEFECT" if rcm else "FAIL-SAFE",
-           "Indian-GSTIN vendor's USD invoice is auto-posted as an RCM import of service",
+           "Indian-GSTIN vendor's USD invoice is proposed for posting as an RCM import of service",
            f"vendor GSTIN=27FGHIJ5678K1Z2, AI is_overseas=False, currency=USD -> "
-           f"posts={len(r['posts'])}, is_reverse_charge_applied={payload.get('is_reverse_charge_applied')}, "
+           f"posts={len(r['posts'])}, status={statuses(r)}, "
+           f"is_reverse_charge_applied={payload.get('is_reverse_charge_applied')}, "
            f"line rate={payload.get('line_items', [{}])[0].get('rate')} (USD 1000 x live rate 83.0)")
 
 

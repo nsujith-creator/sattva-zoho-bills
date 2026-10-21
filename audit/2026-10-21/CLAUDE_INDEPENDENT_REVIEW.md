@@ -1,90 +1,141 @@
 # Independent review of the 21 Oct 2026 forensic audit
 
-**Reviewer:** Claude (Claude Code cloud session), 21 Oct 2026
-**Input:** `SATTVA_ZOHO_FORENSIC_AUDIT_2026-10-21.zip` (6 files, committed unmodified alongside this file; hashes in `SHA256SUMS`)
-**Verdict:** **FAIL stands.** Not because of the 155/157 count, which proves very little, but because F01 + F02 + F03 mean a bill marked "verified" is not actually verified, and F04 means nothing stopped those bills from being posted.
+**Reviewer:** Claude (Claude Code cloud session), 21 Oct 2026. Version 2.
+**Inputs:** the auditor's package (unmodified in this folder, hashes in `SHA256SUMS`) and the audited source in `src/` from PR #2 (commit `600f3b6`).
+**Verdict:** **FAIL stands, now on executed evidence.** The real pipeline, run offline with Zoho and Claude faked, auto-posts a bill with no approval. It then "verifies" that bill although Zoho's total is ₹6.46 lakh off. Separately, a bill that fails verification is still reported to the watcher as created.
 
-## 1. What this review could and could not do
+### Changes from version 1
 
-The contract (`CLAUDE_INDEPENDENT_AUDIT_CONTRACT.md`) asks for independent reproduction against the live code, PDFs and Zoho. Almost none of that was possible from here:
+- The source is now in the repo. All five SHA-256 values were recomputed here and match `LIVE_SOURCE_FINGERPRINTS.json`.
+- The 157 cases, the built-in suites and a new reproduction script (`repro/reproduce_findings.py`) were all run against `src/`.
+- **Corrections to v1:**
+  - F08 is not S1 for shipping-line invoices with a printed exchange rate. The extraction prompt keeps those in INR and they are never converted; the real shipping-line risk is A5.
+  - F09 drops to S3: the risky cases were executed and go to review.
+  - F14 is reframed, and F15 drops to S3.
+- **New findings:**
+  - A5 (S1): Indian vendors can be auto-posted as reverse-charge imports.
+  - A6: a PDF that replaces an older file with the same name is ignored.
+  - A7: which Zoho org and credentials the pipeline posts with is decided by another project's `.env` file.
+  - A4: every line posts to one hard-coded expense account.
+  - A1 is worse than reported.
 
-| Contract item | Status | Reason |
+## 1. Contract status
+
+| Contract item | Status | Notes |
 |---|---|---|
-| Reproduce all 157 cases against fingerprinted live code | **Not done** | Neither the source nor the harness that produced the 157 cases is in this repo. 155 of 157 rows record no input, expected value or actual value, so they cannot be reproduced even with the source. |
-| Inspect F01–F20 in code | **Not done** (reasoned only) | Source not in repo. Line references in the report are unverified. |
-| Test against real source PDFs | **Not done** | No PDFs supplied (correctly, per acceptance criterion 8). |
-| Read-only Zoho GET | **Not done** | No read-only credential; `www.zohoapis.in` and `accounts.zoho.in` are denied by this environment's network policy. |
-| Reassess S1/S2 severity and harm | **Done, provisionally** | Section 4. Based on the report text and domain reasoning. Each line states its basis. |
-| Do not post, delete `parsed_cache.json`, expose secrets or mark PASS | **Complied** | Nothing outside this repo was touched. The package contains no tokens, keys or GSTINs (grep-checked). |
+| Reproduce all 157 cases against the fingerprinted code | **Done** | 155 PASS / 2 FAIL, identical to the audit. Section 3 covers what those rows do and don't test. |
+| Inspect F01–F20 in code | **Done** | Section 4, with `src/` line references. 11 findings were reproduced by running the code. |
+| Test against real source PDFs | **Not done** | No PDFs supplied. |
+| Read-only Zoho GET | **Not done** | `repro/export_zoho_bills_readonly.py` is ready to run on the Windows machine. This cloud environment can't reach `zohoapis.in`. |
+| Reassess S1/S2 severity and harm | **Done** | Section 4. Each line states whether it was reproduced, shown fail-safe, or read from code. |
+| Do not post, delete `parsed_cache.json`, expose secrets or mark PASS | **Complied** | Every run was offline: network calls were blocked and state was written to temporary directories. `src/` has no credential literals; the only GSTINs are synthetic ones in tests. |
 
-## 2. Package integrity (verified here)
+## 2. Source integrity
 
-- `EXECUTED_EDGE_CASES_157.csv` and `.json` are row-for-row identical: 157 unique IDs X001–X157, 155 PASS, 2 FAIL.
-- All 5 entries in `LIVE_SOURCE_FINGERPRINTS.json` are well-formed SHA-256 (uppercase hex, consistent with PowerShell `Get-FileHash`). They can't be checked against anything until the source is pushed.
-- The README's counts (157 cases, 155/2, 20 findings) match the files. Auditor split: 9 × S1 (F01–F09), 11 × S2 (F10–F20).
+- **Hashes:** `zoho_bills.py`, `watcher.py`, `watchdog.py`, `tax_rules.json` and `vendor_rules.json` all match their fingerprints. Line endings are mixed (`zoho_bills.py` and `vendor_rules.json` are CRLF, the rest LF), and `.gitattributes` keeps them byte-exact.
+- **The test files don't run from the committed layout:**
+  - `tests/REPRODUCE_157_CASES.py` hardcodes `C:\temp\zoho\` and `C:\Users\...` paths.
+  - `tests/test_vendor_matching.py` imports `zoho_bills` from the repo root, but the code now lives in `src/`.
+  - `tests/run_tests.py` needs `test_invoices/` and `test_expectations.json`, which aren't in the repo.
 
-## 3. What the 157-case register actually proves
+  All three ran here after path adjustments.
 
-Very little, and the contract itself says not to accept summary counts as proof.
+## 3. Test results (Python 3.13, Linux, offline)
 
-- **155 of 157 rows have empty `expected` and `actual`.** A row that says PASS with no recorded input or expectation is a label, not evidence.
-- **90 rows are opaque numbered variants:** `vendor_match_00..19`, `payload_tax_00..19`, `payload_hsn_00..19`, `overseas_fx_00..09`, `rcm_id_00..09`, `verification_subtotal_00..09`. Another 20 are 10 vendor names × True/False for one overseas-detection function. The 157 cases exercise roughly **9 functions**: validation, overseas detection, invoice-number-from-filename, vendor match, tax payload, HSN payload, FX, RCM and `verify_created_bill`.
-- **All 157 are labelled `S1` "if failed"**, so the severity column carries no information.
-- **Only X156 and X157 carry data.** Both expect `verify_created_bill` → `False` on a bad bill and got `True`. If the harness is what it claims, these reproduce F01 and F02. They are the only two rows worth anything as evidence.
-- *Inference, unconfirmed:* if `verification_subtotal_00..09` assert that small subtotal differences are accepted, they pass **because of** F02 and should start failing once F02 is fixed. Check this when the harness is available.
-- The main `zoho_bills.py --test` reports 31 PASS while counting the known failure `watcher_lock_scope` as a PASS. A harness that reports green on a known failure can't be used as a gate (added below as A1).
+| Suite | Result | What it means |
+|---|---|---|
+| `REPRODUCE_157_CASES.py` (paths adapted) | 155 PASS / 2 FAIL, identical IDs | Reproduced. See below for what the 155 rows prove. |
+| `zoho_bills.py --test` | `SUMMARY: PASS 31 tests` | One of the 31 is `watcher_lock_scope`, whose body is just `assert True` (A1). |
+| `watcher.py --test` | **FAIL** at the preflight assertion | Reproduces F10. |
+| `tests/test_vendor_matching.py` | 16/16 PASS | GSTIN-first vendor matching holds up. |
+| `tests/run_tests.py` | Cannot run (fixtures absent) | When `pdftotext` is missing it prints "SKIPPED - SAFE TO START" and exits 0 (F10). |
+| `repro/reproduce_findings.py` (new) | 11 defects reproduced, F09 fail-safe | Exits 1 while any defect remains, so it can serve as the acceptance gate once fixes land. |
 
-## 4. Severity reassessment
+**What the 157 rows actually test.** The harness is now visible:
+- **About 86 distinct inputs, not 157.** `payload_tax_00..19` repeats a single route. `vendor_match_00..19` covers 10 inputs twice each. `fx`, `rcm` and `verification_subtotal` loop over 2 inputs each.
+- **It doesn't test the production config.** It replaces the live tax configuration before running: overseas signals cut to 5, fake tax IDs, no IGST vendor list, no aliases.
+- **At least 26 PASS rows encode the behaviour this audit flags as defective:**
+  - 5 `verification_subtotal` rows require verification to accept a ₹0.50 subtotal and ₹18.50 total discrepancy (F01/F02).
+  - 10 `payload_hsn` rows require a 7-digit HSN to be dropped (F07).
+  - 10 `overseas` rows require a vendor-name match to override an AI "domestic" flag on an INR invoice (A5).
+  - `validate_INR_line_on_USD` requires a USD invoice with an INR line to be accepted.
 
-Basis key: **R** = reasoned from report text and domain knowledge (no code seen), **P** = supported by package data, **Q** = cannot settle without code.
+## 4. Findings verified against `src/`
 
-| ID | Auditor | Review | Basis | Reasoning |
+**Evidence key:**
+- **RUN:** reproduced by executing the code (`repro/reproduce_findings.py`; *e2e* means the real `zoho_bills.main()` and, where noted, `watcher.run_for_file()`).
+- **SAFE:** executed and shown to route to review.
+- **CODE:** read from source, not executed.
+
+| ID | Audit | Review | Evidence | What the code does |
 |---|---|---|---|---|
-| F01 gross payable not compared | S1 | **S1** | P (X156), R | Zoho derives the total from lines, tax_id, RCM flag and adjustments. Skipping the total check means a wrong tax route, wrong rate, missing RCM or bad round-off can all pass verification. |
-| F02 subtotal tolerance max(₹1, 1%) | S1 | **S1** | P (X157), R | On a ₹3 lakh subtotal (Maersk-sized), 1% lets roughly ₹3,000 per bill through unflagged. Matching to ₹0.01 is a one-line fix. |
-| F03 `created` logged before read-back; watcher checks `created` first | S1 | **S1** | R | A bill that fails verification is treated as done and never returns for review. The retained log already holds 2 `post_verify_failed`. Cheapest S1 to fix. |
-| F04 auto-post despite AGENTS.md approval rule | S1 | **S1 (multiplier)** | R, P (log) | This is a control failure, and it amplifies every other S1. The retained log shows 403/500 (81%) already go to `needs_review` and only 60 were `created`, so gating every post costs about 60 extra approvals per 500 bills. Cheap to fix and removes a lot of risk. |
-| F05 global invoice-number-only dedupe | S1 | **S1, measurable now** | R, P (log) | A false positive silently drops a real bill: the payable goes unrecorded and the ITC is missed. Short freight invoice numbers collide across vendors. **The log has 35 `skipped_duplicate` entries. Check each one's vendor against the bill it matched.** |
-| F06 multi-invoice PDF collapsed to largest | S1 | **S1** | R | Whole bills go missing (unrecorded payable, lost ITC). Detectable from `parsed_cache.json`: look for PDFs where extraction saw more than one invoice. |
-| F07 invalid-length HSN/SAC silently dropped | S1 | **S2** | R, Q | A missing HSN on an *inward* bill changes neither the payable nor the tax. HSN summary reporting falls on outward supplies. The real risk is that a malformed code can be a symptom of a misparsed line, so it should route to review instead of being stripped silently. Also check whether valid 4-digit HSNs are being treated as "invalid". |
-| F08 FX at processing-day rate / fallback | S1 | **S1** for INR-payable invoices with a printed ex-rate (shipping lines); **S2** for foreign SaaS | R | When an Indian vendor bills in USD and prints its exchange rate and INR payable, that printed INR figure is the amount owed, so any other rate breaks parity. For foreign SaaS under RCM, the rate should be the transaction-date rate per accounting policy. Processing-day drift is usually under 1%, but it is systematic and it also shifts the RCM IGST base. |
-| F09 GST: supplier-state routing, 5%/18% only | S1 | **S2, pending Q** | R, Q | *My understanding, confirm with your CA:* (a) For B2B services to a registered recipient, IGST Act s.12(2)(a) puts place of supply at the recipient's location. For most of what a forwarder buys, IGST vs CGST+SGST therefore reduces to "supplier state ≠ Sattva's registered state". The exceptions are immovable-property and hotel services (s.12(3)), restaurant (s.12(4)) and event admission (s.12(6)). (b) Since the rate rationalisation effective 22 Sep 2025, 5% and 18% (plus 40%) are the main slabs, so a 5/18 whitelist fits current bills better than the report implies. The gaps are exempt/nil/0% lines and pre-22-Sep-2025 invoices at 12%/28%. **What sets the severity is whether an unsupported rate routes to review (fail-safe → S3) or gets coerced to 5/18 (→ S1).** |
-| F10 watcher self-test fails at preflight | S2 | **S2: the test is right, the code is wrong** | R | The real finding is that the preflight safety gate is disabled. Fix it by restoring the gate, not by editing the assertion. |
-| F11 PDF extraction suite skipped | S2 | **S3** as a defect | R | Fixed by installing `poppler-utils`. The evidence gap remains until the suite actually runs. |
-| F12 500-entry rolling log | S2 | **S2** | R | It also means **reconciliation has to start from Zoho, not the log**: list the bills created by the integration's API user since go-live. |
-| F13 local-only, no cloud/mobile | S2 | **Out of scope** | R | This is a missing feature, not a defect, and the report itself puts it out of scope. It should not count toward the FAIL. |
-| F14 POST-timeout replay idempotency | S2 | **S2** | Q | The duplicate-bill path depends on how F05's dedupe check sequences against an uncertain POST. Settle it with the code. |
-| F15 watcher reads stale `run_log.json` by filename | S2 | **S2, S1 if confirmed** | Q | If a stale `created` from an earlier run can mark a new, unposted file as done, the bill is silently missed. That is the same harm as F05/F06. |
-| F16 all three scheduled tasks Disabled | S2 | **Not a defect: the current safety state** | P (report) | With the system off, no new harm is accruing. **Keep the tasks disabled** until F01–F04 are fixed. |
-| F17 parse-cache recovery unproven | S2 | **S2** | R | Agree. |
-| F18 LLM extraction has no independent truth anchor | S2 | **S2, root cause of F20** | R | With F01/F02 relaxed, verification compares Zoho against the LLM's output, not against the PDF, and a self-consistent wrong extraction passes. A cheap deterministic anchor: cross-check invoice number, GSTIN and gross total against the `pdftotext` text layer. |
-| F19 PDF and Zoho attachment not proved together | S2 | **S2** | R | Agree. |
-| F20 no end-to-end PDF → Zoho parity | S2 | **The gate** | R | Not a defect but the outstanding evidence. The system can't move from FAIL without it, whatever else is fixed. |
+| F01 | S1 | **S1** | RUN e2e | `verify_created_bill` reads Zoho `total` (`zoho_bills.py:1060`) and never compares it. In the e2e run, Zoho total ₹9,99,999 against printed ₹3,54,000 still gives `POST_VERIFY_PASSED`. Domestic taxes *are* reconciled exactly before posting (`1596–1651`), so the unchecked risk sits on the Zoho side: a wrong tax-ID mapping in Zoho, tax-inclusive settings, or rounding. None of these is read back. |
+| F02 | S1 | **S1** | RUN e2e | `tolerance = max(1.0, expected_subtotal * 0.01)` (`1062`). A ₹2,900 subtotal error on a ₹3,00,000 bill passes. |
+| F03 | S1 | **S1** | RUN e2e + watcher | `created` is logged (`2329`) before verification (`2330`), and `run_log["created"]` keeps the bill either way. The watcher returns `created` (`watcher.py:706`), and `should_mark_seen("created")` is True. Startup reconciliation skips any file whose latest status isn't `created` (`watcher.py:596`), so a `post_verify_failed` file stays marked done forever. |
+| F04 | S1 | **S1** | RUN e2e | Only GSTIN-tier vendor matches and AI-vs-keyword tax-rate disagreements stop for approval (`2297–2313`). Exact or alias matches POST straight away. This contradicts `AGENTS.md`: "Human approval and reconciliation are mandatory before posting." |
+| F05 | S1 | **S1** | RUN e2e + watcher | `fetch_existing_bills` keeps bill numbers only, with no vendor (`1104–1117`). The check runs before vendor matching (`2164`). Another vendor's `INV-1001` makes this bill `skipped_duplicate`, and the watcher marks it done. Formatting variants (`INV-001` vs `INV001`) also slip past, so duplicates can happen the other way too. |
+| F06 | S1 | **S1** | RUN | A multi-invoice PDF keeps only the invoice with the highest line total (`1427–1444`). The result is cached by file hash (`2113`), so the dropped invoices never return, and the only trace is a stdout `PARSE_MULTI_INVOICE` line. The code comment cites Blinkit product plus platform-fee invoices. |
+| F07 | S1 | **S2** | RUN | Invalid HSN/SAC is dropped (`1667–1672`). New detail: the code truncates to 8 digits *before* the length check, so a 10-digit code posts as a wrong 8-digit code. The amounts payable don't change. |
+| F08 | S1 | **S2** (corrects v1) | RUN | Exchange-rate conversion applies only to bills classified overseas and in USD (`1663`). The watcher never passes `--use-invoice-date-fx` (`watcher.py:678`), so these bills use the live processing-day rate. v1's S1 for printed-ROE shipping-line invoices was wrong: prompt rules 1–5 keep those in INR. |
+| F09 | S1 | **S3** | SAFE e2e | A 12% line raises `line_tax_percentage_unsupported` and goes to review (`1591`, `2285`). An intra-state GSTIN with printed IGST fails the reconciliation, which matches every tax component to the paisa (`1636–1647`), and also goes to review. Intra/inter-state comes from the GSTIN prefix `27` (`1542`), which is right for B2B services to a Maharashtra registration. *Rate and place-of-supply conclusions are my reading of GST law; confirm with your CA.* |
+| F10 | S2 | **S2** | RUN | `enforce_test_gate()` is commented out in the watcher's entry point (`watcher.py:1383`, "was spawning visible startup subprocesses"), yet the call already uses `CREATE_NO_WINDOW` (`watcher.py:105`). Re-enabling it alone isn't enough: the gate passes with `pdftotext` missing, and with zero fixtures. |
+| F11 | S2 | **S2** | CODE | `pdftotext` isn't only for tests. Production uses it for the MBL regex (`2120`) and the CMA CGM invoice-number override (`2141`). Without it, `extract_text_from_pdf` falls back to a raw-bytes regex that finds little in compressed PDFs, so both deterministic checks go quiet and the AI's values stand. **Check `where pdftotext` on the Windows machine.** |
+| F12 | S2 | **S2** | CODE | `MAX_LOG_ENTRIES = 500` (`101`, `503`). |
+| F13 | S2 | Out of scope | — | Missing feature, not a defect. |
+| F14 | S2 | **S2, reframed** | CODE | A replayed POST is blocked on the next run by the bill-number set. The real gap is different: a POST that times out after Zoho created the bill is logged `failed`, retried, then `skipped_duplicate`. The bill exists, was never verified, and is labelled skipped. |
+| F15 | S2 | **S3** | CODE | `run_log.json` is matched by filename with no run_id check (`watcher.py:699–721`). A stale read needs the subprocess to exit without writing `run_log`. Every path I traced ends in `failed` or `needs_review`, not a false `created`. |
+| F16 | S2 | Not a defect | — | Runtime state, and currently the safety net. |
+| F17 | S2 | **S2** | CODE | If `parsed_cache` and `seen_files` are both lost, every PDF is re-parsed. Non-deterministic AI output plus exact-string dedupe can then produce duplicate bills. |
+| F18 | S2 | **S2** | CODE | The domestic path checks the AI's arithmetic exactly, which is stronger than the report implies. The overseas path reconciles nothing (`1599–1600`). Neither compares against the PDF. |
+| F19 | S2 | **S2** | CODE | No attachment upload anywhere in `zoho_bills.py`. |
+| F20 | S2 | **The gate** | — | Still open. See section 6. |
 
 **Added by this review**
 
-| ID | Severity | Finding |
-|---|---|---|
-| A1 | S2 | `zoho_bills.py --test` counts the known failure `watcher_lock_scope` as PASS. A green self-test can't be used as a release gate until known failures report as failures. |
-| A2 | n/a (evidence quality) | The 157-case register isn't reproducible: 155 rows lack input/expected/actual and the harness isn't in the package. Future registers must record inputs and expectations per row. |
-| A3 | n/a (process) | The fingerprints can be checked only on the Windows machine. Until the source is in this repo, nobody else can confirm which code was audited. |
+| ID | Severity | Evidence | Finding |
+|---|---|---|---|
+| A1 | S2 | RUN | The "known open" `watcher_lock_scope` self-test is `assert True` (`3017–3018`) and counts toward `PASS 31`. |
+| A2 | Evidence quality | RUN | The 157-row register: about 86 distinct inputs, replaced config, and at least 26 rows that assert the flagged behaviour (section 3). |
+| A3 | Resolved | — | The source is now in the repo (PR #2). |
+| A4 | S2, confirm intent | RUN | Every line posts to `account_id` `914109000000000567` (`1666`), and the AI's `account_name` is ignored. Unless that account is a deliberate catch-all, SaaS, clearance and freight costs all land in one P&L head. |
+| A5 | **S1 (new)** | RUN e2e | Overseas status ignores the vendor's GSTIN (`1484–1506`). Any of three things marks a bill overseas: a non-INR currency, an AI `is_overseas=true`, or a vendor name containing a signal substring (`AWS` matches `DAWSON`). The bill is then auto-posted as a reverse-charge (RCM) import with an exchange-rate conversion whenever no supplier GST is printed. In the e2e run, an Indian-GSTIN vendor's USD invoice, which the AI called domestic, was posted with RCM at 18% IGST on a ₹83,000 base. The only guard is that a printed supplier GST sends the bill to review. |
+| A6 | S2 (new) | CODE | The watcher tracks files by name (`watcher.py:813`). A new PDF saved over an older one with the same name is never processed. |
+| A7 | **S1 if ever triggered, else S2 (new)** | CODE | Posting credentials and org come from `C:\sattva\books_recon\.env` (`590–675`). Any `BOOKS_RECON_ZOHO_SANDBOX_*` key makes the pipeline post with sandbox credentials and org. Any `..._READ_*` key makes it post with the "read" client. The access token is saved to `config.json` and reused by any run within 50 minutes, whichever credentials created it (`760–816`). **Bills logged `created` may not be in the production org.** Check now: does that `.env` define SANDBOX or READ keys, and what `source_module=` do the `[zoho-auth]` lines in `watcher.log` show? |
 
-**Net:** 7 S1 (F01–F06, F08 printed-rate case), 1 S1-or-S3 pending code (F09), 3 reclassified as not defects (F13, F16, F20), plus A1–A3.
+**Net:**
+- **S1 (7):** F01–F06 and A5, plus A7 if the sandbox override was ever active.
+- **S2 (12):** F07, F08, F10, F11, F12, F14, F17, F18, F19, A1, A4 and A6.
+- **S3 (2):** F09 and F15.
+- **Not defects (3):** F13, F16 and F20.
 
-## 5. Recommended order (cheapest risk reduction first)
+**What holds up well:** the domestic route.
+- Intra/inter-state is set from the GSTIN.
+- Line, tax and total are reconciled to the paisa, and unsupported rates or a mismatched tax split go to review.
+- Vendor matching never falls back to a conflicting name when the invoice carries a GSTIN (`1868`).
+- Low-confidence parses, ambiguous overseas status and overseas vendors charging Indian GST all go to review.
 
-1. **Keep all three scheduled tasks disabled** (F16).
-2. **Turn off auto-post (F04).** Every bill goes through approval. 81% already do.
-3. **Fix verification (F01, F02, F03):** exact subtotal, tax amounts and gross total to ₹0.01; compare the GST route and RCM flag; log `created` only after read-back passes; the watcher treats only `verified` as success.
-4. **Read-only reconciliation, Zoho-side:** list every bill created by the integration since go-live, compare each against its source PDF, and start with the 2 `post_verify_failed` and the Maersk `MH27IN1000763792` (₹369,608.63).
-5. **Audit the 35 `skipped_duplicate` entries** for cross-vendor collisions, then make dedupe vendor/GSTIN-scoped (F05).
-6. **Hold multi-invoice PDFs for review** (F06), and route unsupported GST rates and invalid HSN to review rather than coercing or stripping them (F07, F09).
-7. Restore the watcher preflight gate (F10), make known failures fail (A1), and install `poppler-utils` and run the PDF suite (F11).
+## 5. Fix order (cheapest risk reduction first)
 
-## 6. What's needed to finish the contract
+1. **Keep the scheduled tasks disabled. Check A7 today:** look in the `.env` without sharing the values, and grep `watcher.log`.
+2. **F04:** require approval for every bill. Remove the exact/alias auto-post at `2297`, and record approver, timestamp and PDF hash.
+3. **F03:** log `created` and append to `run_log["created"]` only after verification passes. Add a `verified` status, and make the watcher treat only `verified` as done (`watcher.py:341`, `706`).
+4. **F01/F02:** compare `total`, `tax_total`, `sub_total` and each line's `tax_id` and rate to ₹0.01. Allow ₹1 only for an explicit round-off line. Remove the 1% tolerance at `1062`.
+5. **A5:** a vendor with an Indian GSTIN is never overseas, and non-INR currency on such a vendor goes to review. Replace substring signals with exact vendor IDs.
+6. **F05:** dedupe on `(vendor_id, normalised bill number)`. Keep `vendor_id` in `fetch_existing_bills`, and run the check after vendor matching.
+7. **F06:** send multi-invoice PDFs to review and cache every invoice.
+8. **F07:** send invalid HSN/SAC to review, and remove the `[:8]` truncation.
+9. **F10/F11:** install poppler on the Windows machine. Re-enable `enforce_test_gate()`, and make a missing `pdftotext` or missing fixtures a failure.
+10. **F08:** have the watcher pass `--use-invoice-date-fx`, and send the bill to review on a rate-fetch failure instead of falling back.
 
-1. **Push the five fingerprinted files** (`zoho_bills.py`, `watcher.py`, `watchdog.py`, `tax_rules.json`, `vendor_rules.json`), plus `AGENTS.md`, `test/run_tests.py` and the script that generated the 157 cases. Grep the source for hardcoded credentials first. This repo's `.gitattributes` stores these files byte-exact so the SHA-256 values still match after a commit from Windows, and `.gitignore` blocks `config.json`, PDFs and state JSON.
-2. **A Zoho read path**, one of:
-   - (a) a read-only Zoho Books OAuth client (bills/contacts READ scopes) stored as environment secrets, plus `www.zohoapis.in` and `accounts.zoho.in` added to the environment's allowed domains, or
-   - (b) a read-only export script run on the Windows machine, with its output uploaded to the session.
-3. **Source PDFs for the posted bills**, uploaded to the session and never committed.
+`repro/reproduce_findings.py` asserts the correct behaviour for each of these, so it goes green as they land.
+
+## 6. Remaining blocker: reconciliation (F20)
+
+`repro/export_zoho_bills_readonly.py` runs on the Windows machine. It uses `zoho_bills.py`'s own auth with `zoho_post` disabled, and writes one JSON file containing:
+
+- **Auth and org:** which credentials and org it read from (checks A7).
+- **Matched entries:** every `created`, `post_verify_failed`, `failed` and `skipped_duplicate` entry in `invoice_log.json`, matched to the Zoho bills with the same number. This checks F05 vendor collisions and F14 timeouts.
+- **Bill detail:** trimmed details for each matched bill (line taxes, RCM, `documents`).
+- **PDFs needed:** the list of source PDFs to upload.
+
+Upload that JSON and those PDFs to the review session, without committing either. Every posted bill then gets a field-by-field comparison against its PDF. One limit remains: `invoice_log.json` retains only 500 entries (F12), so bills older than that window need a Zoho-side date-range pass.

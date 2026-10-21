@@ -11,3 +11,5 @@ seen_files.json
 pending_files.json
 run_log.json
 __pycache__/
+# Read-only Zoho export output from audit/2026-10-21/repro (business data)
+zoho_audit_export_*.json

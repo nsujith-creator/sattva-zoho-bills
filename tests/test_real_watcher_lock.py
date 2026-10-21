@@ -1,5 +1,5 @@
 """A1: two genuinely overlapping watcher processes against an isolated lock file."""
-import os,sys,tempfile,subprocess,time,pathlib,textwrap
+import os,sys,tempfile,subprocess,time,pathlib,textwrap,unittest
 SRC=pathlib.Path(__file__).resolve().parents[1]/"src"/"watcher.py"
 CHILD=r'''
 import importlib.util,sys,os,time
@@ -34,7 +34,16 @@ def run_case(stale):
         print("CASE",("STALE" if stale else "FRESH"),"WINNERS",content,"RETURNS",a.returncode,b.returncode,flush=True)
         assert len(content)==1,(content,ao,bo,ae,be)
         assert not (a.returncode and b.returncode),(ao,bo,ae,be)
-if __name__=="__main__":
-    run_case(False)
-    run_case(True)
-    print("A1 real-process concurrency PASSED")
+class WindowsWatcherLockTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows kernel locking requires Windows")
+    def test_fresh_contention(self):
+        run_case(False)
+
+    @unittest.skipUnless(os.name == "nt", "Windows kernel locking requires Windows")
+    def test_stale_contention(self):
+        run_case(True)
+
+
+if __name__ == "__main__":
+    unittest.main()
+

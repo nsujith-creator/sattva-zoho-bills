@@ -3305,18 +3305,6 @@ def _business_test():
             parsed = json.loads(output)
             assert parsed == {"ok": False, "error": "fetch failed"}
 
-        def t_watcher_scope_deferred():
-            # Real concurrent Windows processes compete for isolated watcher
-            # lock paths; the harness tests both fresh and stale PID files.
-            runner = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                  "tests", "test_real_watcher_lock.py")
-            assert os.path.isfile(runner), f"watcher concurrency test missing: {runner}"
-            proc = subprocess.run([sys.executable, runner], capture_output=True,
-                                  text=True, timeout=40)
-            assert proc.returncode == 0, (
-                "watcher concurrency test failed: " + proc.stdout[-1200:] +
-                " " + proc.stderr[-1200:])
-
         def t_resolve_effective_usd_rate_invoice_date_fx():
             old_fetch = globals()["fetch_usd_inr_rate_for_date"]
             calls = []
@@ -3418,7 +3406,6 @@ def _business_test():
         check("list_existing_bills_json_success", t_list_existing_bills_json_success)
         check("list_existing_bills_json_failure", t_list_existing_bills_json_failure)
         check("list_existing_bills_json_fetch_failure", t_list_existing_bills_json_failure_from_fetch)
-        check("watcher_lock_scope", t_watcher_scope_deferred)
         check("resolve_effective_usd_rate_invoice_date_fx", t_resolve_effective_usd_rate_invoice_date_fx)
         check("resolve_effective_usd_rate_inr_skips_fetch", t_resolve_effective_usd_rate_inr_skips_fetch)
         check("resolve_effective_usd_rate_override_skips_fetch", t_resolve_effective_usd_rate_override_skips_fetch)

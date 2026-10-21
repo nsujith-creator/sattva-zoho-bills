@@ -185,7 +185,9 @@ def fetch_tax_ids_from_zoho(tax_rules, run_id="unset"):
 
 
 # ── Session 5: AI cost controls ──────────────────────────────────────────────
-_PARSER_VERSION       = 6
+# 7: multi-invoice PDFs are held whole (audit F06). Version-6 entries may hold
+# only one invoice of several, so they must be re-parsed.
+_PARSER_VERSION       = 7
 _AI_VENDOR_TOP_N      = 5
 _AI_PROMPT_CHAR_LIMIT = 6000
 
@@ -442,6 +444,10 @@ def _cache_lookup(cache, file_hash):
         return None
     if entry.get("_parser_version") != _PARSER_VERSION:
         return None
+    if isinstance(entry.get("multi_invoice_count"), int) and entry["multi_invoice_count"] > 1 \
+            and isinstance(entry.get("invoices"), list):
+        # A multi-invoice PDF held for review as a whole (audit F06).
+        return {k: v for k, v in entry.items() if not k.startswith("_")}
     _required = ("vendor_name", "bill_number", "bill_date", "line_items", "confidence")
     if any(not entry.get(k) for k in _required):
         return None
@@ -465,9 +471,10 @@ def _load_parse_cache(run_id="unset"):
         obs_print("STATE_RECOVERY",
                   f"run_id={run_id} file=parsed_cache.json reason={err} action=start_empty")
         return {}
-    # Filter invalid entries
+    # Filter invalid entries. A held multi-invoice PDF keeps its bill numbers
+    # inside "invoices" (audit F06).
     valid = {k: v for k, v in data.items()
-             if isinstance(v, dict) and v.get("bill_number")}
+             if isinstance(v, dict) and (v.get("bill_number") or isinstance(v.get("invoices"), list))}
     dropped = len(data) - len(valid)
     if dropped:
         obs_print("STATE_RECOVERY",
@@ -1095,6 +1102,50 @@ def fetch_existing_bills():
     return existing
 
 
+def _bill_key(bill_number):
+    """Bill number without case, spaces or punctuation, for duplicate lookup."""
+    return re.sub(r"[^A-Z0-9]", "", str(bill_number or "").upper())
+
+
+def fetch_existing_bill_index():
+    """Zoho bills keyed by _bill_key(), each with its vendor (audit F05)."""
+    print("\nFetching existing bills from Zoho...")
+    index = {}
+    count = 0
+    page = 1
+    while True:
+        data = zoho_get("bills", {"page": page, "per_page": 200})
+        for b in data.get("bills", []):
+            index.setdefault(_bill_key(b.get("bill_number")), []).append({
+                "bill_number": str(b.get("bill_number") or "").strip(),
+                "vendor_id": str(b.get("vendor_id") or "").strip(),
+                "bill_id": str(b.get("bill_id") or "").strip(),
+            })
+            count += 1
+        if not data.get("page_context", {}).get("has_more_page"):
+            break
+        page += 1
+    print(f"  {count} existing bills found.")
+    return index
+
+
+def find_existing_bill(index, vendor_id, bill_number):
+    """
+    ("exact", bills) if this vendor already has this bill number in Zoho.
+    ("variant", bills) if this vendor, or a bill with no vendor on record, has the
+    same number written differently (e.g. INV-001 vs INV001): a human decides.
+    (None, []) otherwise. Another vendor's bill with the same number is not a
+    duplicate (audit F05).
+    """
+    vendor_id = str(vendor_id or "").strip()
+    candidates = [b for b in index.get(_bill_key(bill_number), [])
+                  if not b["vendor_id"] or b["vendor_id"] == vendor_id]
+    exact = str(bill_number or "").strip().upper()
+    if any(b["vendor_id"] == vendor_id and b["bill_number"].upper() == exact for b in candidates):
+        return "exact", candidates
+    return ("variant", candidates) if candidates else (None, [])
+
+
 def list_existing_bills_json_mode():
     """
     Read-only CLI mode for watcher live reconciliation.
@@ -1399,25 +1450,20 @@ def parse_pdf_with_claude_once(filepath, filename, vendors_list):
     except json.JSONDecodeError as _je:
         raise Exception(f"PARSE_JSON_INVALID: {_je} | raw_snippet={raw[:200]}")
     # Guard: Claude returns a JSON array when a single PDF contains multiple invoices
-    # (e.g. Blinkit PDFs have a product invoice + platform-fee invoice).
-    # Take the first element — it is the primary/largest invoice.
-    # Future: process all elements as separate Zoho bills.
+    # (e.g. Blinkit PDFs have a product invoice + platform-fee invoice). Never keep
+    # one and drop the rest (audit F06): hold the whole PDF for review with every
+    # invoice preserved, including in the parse cache.
     if isinstance(result, list):
-        obs_print("PARSE_MULTI_INVOICE",
-                  f"run_id={_run_id_ctx} file={filename} reason=multi_invoice_pdf "
-                  f"count={len(result)} action=using_highest_value")
-        # Pick the invoice with the highest total line-item value.
-        # Index 0 is not always the primary invoice (e.g. Blinkit PDFs have a
-        # zero-value product seller invoice first, followed by the real bill).
-        def _invoice_total(inv):
-            if not isinstance(inv, dict):
-                return 0
-            return sum(float(li.get("rate", 0) or 0)
-                       for li in inv.get("line_items", [])
-                       if isinstance(li, dict))
-        valid = [r for r in result if isinstance(r, dict)]
-        if valid:
-            result = max(valid, key=_invoice_total)
+        if len(result) == 1 and isinstance(result[0], dict):
+            result = result[0]
+        elif result:
+            # Malformed elements are kept too: one valid invoice plus junk is held.
+            invoices = [r if isinstance(r, dict) else {"unparsed": str(r)[:200]} for r in result]
+            obs_print("PARSE_MULTI_INVOICE",
+                      f"run_id={_run_id_ctx} file={filename} reason=multi_invoice_pdf "
+                      f"count={len(invoices)} action=hold_for_review")
+            result = {"confidence": "low", "multi_invoice_count": len(invoices), "invoices": invoices,
+                      "issues": f"multi_invoice_pdf:{len(invoices)}"}
         else:
             result = {"confidence": "low", "issues": "claude_returned_empty_array"}
     result["_vendor_context_count"] = len(shortlist)
@@ -1468,25 +1514,47 @@ def determine_overseas_status(parsed, matched_vendor_name):
     else:
         ai_flag = None
     currency = parsed.get("currency_code", "INR").upper()
-    vname    = (matched_vendor_name or "").upper()
-    vendor_overseas = any(sig in vname for sig in _OVERSEAS_VENDOR_SIGNALS)
-    # Vendor name match is decisive: known overseas vendors are always overseas
-    # regardless of AI flag or currency (INR billing is common for RCM invoices)
-    if vendor_overseas:
-        return True
+    # Whole words only (audit A5): "AWS" must not match "DAWSON".
+    vname    = f" {_normalize_name(matched_vendor_name or '')} "
+    vendor_overseas = any(f" {_normalize_name(sig)} " in vname
+                          for sig in _OVERSEAS_VENDOR_SIGNALS if _normalize_name(sig))
     currency_signal = currency not in ("INR", "")
     signals_true  = sum([ai_flag is True, currency_signal])
     signals_false = sum([ai_flag is False, not currency_signal])
     if signals_true >= 1:
         return True
+    if vendor_overseas:
+        # A vendor-name match alone never decides reverse charge (audit A5): a
+        # domestic contact such as "AWS LOGISTICS" with an INR invoice goes to
+        # review. determine_tax_route() also holds any Indian-GSTIN vendor.
+        return None
     if signals_false >= 2:
         return False
     return None
+
+def _is_indian_gstin(value):
+    """
+    True for a well-formed GSTIN of a supplier located in an Indian state or UT
+    (state codes 01-38). OIDAR registrations of foreign suppliers use a different
+    format and code 99, so they do not count.
+    """
+    gstin = str(value or "").strip().upper()
+    if not re.fullmatch(r"[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]", gstin):
+        return False
+    return 1 <= int(gstin[:2]) <= 38
+
 
 def determine_tax_route(parsed, matched_vendor_name, vendor_gst_no=""):
     vname_upper = (matched_vendor_name or "").upper()
     svc_type    = classify_service_type(parsed)
     overseas    = determine_overseas_status(parsed, matched_vendor_name)
+    if overseas is True and (_is_indian_gstin(vendor_gst_no) or _is_indian_gstin(parsed.get("vendor_gstin"))):
+        # Audit A5: a supplier registered in an Indian state is not an import of
+        # services, whatever the currency, AI flag or vendor name suggests.
+        return {"is_overseas": None, "is_freight": svc_type == "freight",
+                "gst_route": "unknown", "tax_mode": "unknown", "tax_id_key": None,
+                "review_required": True,
+                "review_reason": "indian_gstin_vendor_with_overseas_signal"}
     if overseas is True:
         try:
             _supplier_gst_charged = any(
@@ -2093,7 +2161,7 @@ def main():
                       f"tax_id_keys={list(_TAX_ID_MAP.keys())}")
 
         obs_print("FETCH_EXISTING_BILLS_STARTED", f"run_id={run_id}")
-        existing_bills = fetch_existing_bills()
+        existing_bills = fetch_existing_bill_index()
 
         obs_print("FETCH_VENDORS_STARTED", f"run_id={run_id}")
         vendors      = fetch_vendors()
@@ -2166,6 +2234,17 @@ def main():
                     obs_print("STATE_WRITE_FAILED",
                               f"run_id={run_id} file=parsed_cache.json reason={werr}")
 
+            if isinstance(parsed.get("multi_invoice_count"), int) and parsed["multi_invoice_count"] > 1:
+                numbers = [str(inv.get("bill_number") or "?") for inv in parsed.get("invoices", [])]
+                reason = f"multi_invoice_pdf:{parsed['multi_invoice_count']}:" + ",".join(numbers)[:120]
+                print(f"         NEEDS REVIEW - {reason}\n")
+                obs_print("VALIDATION_FAILED", f"run_id={run_id} file={filename} reason={reason}")
+                run_log["needs_review"].append({"file": filename, "parsed": parsed, "reason": reason, "run_id": run_id})
+                notify("Bill Needs Review", filename + ": PDF holds several invoices. Enter or split each one.")
+                append_invoice_log(filename, ",".join(numbers)[:80], "", "", "", "needs_review", reason, run_id=run_id)
+                review += 1
+                continue
+
             # MBL: regex authoritative, Claude fallback
             pdf_text   = extract_text_from_pdf(filepath)
             regex_mbl  = extract_mbl_from_pdf_text(pdf_text)
@@ -2211,13 +2290,6 @@ def main():
             if parsed.get("issues"):
                 print(f"         Issues: {parsed['issues']}")
 
-            if bill_no.upper() in existing_bills:
-                print("         SKIP - already in Zoho.\n")
-                run_log["skipped_duplicate"].append({"file": filename, "bill_number": bill_no, "run_id": run_id})
-                append_invoice_log(filename, bill_no, mbl_no, vendor_n, bill_date, "skipped_duplicate", run_id=run_id)
-                skipped += 1
-                continue
-
             if not bill_no:
                 print("         NEEDS REVIEW - no bill number.\n")
                 obs_print("VALIDATION_FAILED", f"run_id={run_id} file={filename} reason=no_bill_number")
@@ -2253,6 +2325,36 @@ def main():
                 append_invoice_log(filename, bill_no, mbl_no, vendor_n, bill_date, "needs_review", reason, run_id=run_id)
                 review += 1
                 review_reasons["vendor_match_review"] += 1
+                continue
+
+            # Filename fallback: if AI returned bill_number == mbl_number, derive from filename
+            _bn = parsed.get("bill_number", "").strip()
+            _mn = parsed.get("mbl_number", "").strip()
+            if _mn and _bn.upper() == _mn.upper():
+                _stem = _derive_bill_number_from_filename(filename, _mn)
+                if _stem:
+                    obs_print("BILL_NUMBER_DERIVED_FROM_FILENAME",
+                              f"run_id={run_id} file={filename} original={_bn} derived={_stem}")
+                    parsed["bill_number"] = _stem
+                    bill_no = _stem
+
+            # Duplicates are per vendor (audit F05), so this runs after the vendor match.
+            dup_kind, dup_bills = find_existing_bill(existing_bills, vendor_id, bill_no)
+            if dup_kind == "exact":
+                print("         SKIP - already in Zoho for this vendor.\n")
+                run_log["skipped_duplicate"].append({"file": filename, "bill_number": bill_no,
+                                                     "vendor_id": vendor_id, "run_id": run_id})
+                append_invoice_log(filename, bill_no, mbl_no, matched_name, bill_date, "skipped_duplicate", run_id=run_id)
+                skipped += 1
+                continue
+            if dup_kind == "variant":
+                reason = "possible_duplicate:" + ",".join(b["bill_number"] for b in dup_bills)[:120]
+                print(f"         NEEDS REVIEW - {reason}\n")
+                obs_print("POSSIBLE_DUPLICATE", f"run_id={run_id} file={filename} vendor_id={vendor_id} {reason}")
+                run_log["needs_review"].append({"file": filename, "parsed": parsed, "reason": reason, "run_id": run_id})
+                notify("Bill Needs Review", filename + ": Same vendor has a similar bill number in Zoho.")
+                append_invoice_log(filename, bill_no, mbl_no, matched_name, bill_date, "needs_review", reason, run_id=run_id)
+                review += 1
                 continue
 
             tax_route = determine_tax_route(parsed, matched_name, vendor_gst_no=matched_gst_no)
@@ -2293,15 +2395,6 @@ def main():
                     review += 1
                     continue
 
-            # Filename fallback: if AI returned bill_number == mbl_number, derive from filename
-            _bn = parsed.get("bill_number", "").strip()
-            _mn = parsed.get("mbl_number", "").strip()
-            if _mn and _bn.upper() == _mn.upper():
-                _stem = _derive_bill_number_from_filename(filename, _mn)
-                if _stem:
-                    obs_print("BILL_NUMBER_DERIVED_FROM_FILENAME",
-                              f"run_id={run_id} file={filename} original={_bn} derived={_stem}")
-                    parsed["bill_number"] = _stem
             invalid_reason = validate_before_post(parsed, vendor_id)
             if invalid_reason:
                 print(f"         NEEDS REVIEW - validation failed: {invalid_reason}\n")
@@ -2421,7 +2514,8 @@ def main():
                     raise Exception("Zoho POST response missing a valid bill_id")
                 print(f"         POSTED - Zoho Bill ID: {bid} (verifying)")
                 obs_print("POST_COMPLETED", f"run_id={run_id} file={filename} bill_id={bid} status=posted_unverified")
-                existing_bills.add(bill_no.upper())
+                existing_bills.setdefault(_bill_key(bill_no), []).append(
+                    {"bill_number": bill_no, "vendor_id": str(vendor_id), "bill_id": bid})
                 created += 1
                 approval_queue.pop(file_hash, None)
                 save_approval_queue(approval_queue, run_id=run_id)
@@ -2658,11 +2752,16 @@ def _business_test():
             try:
                 _OVERSEAS_VENDOR_SIGNALS.update({"ADOBE", "ANTHROPIC"})
                 assert determine_overseas_status(
-                    parsed_base(vendor_name="ADOBE IRELAND", is_overseas=False,
+                    parsed_base(vendor_name="ADOBE IRELAND", is_overseas=True,
                                 currency_code="INR"),
                     "ADOBE IRELAND") is True
+                # Audit A5: a name match alone goes to review, not reverse charge.
                 assert determine_overseas_status(
-                    parsed_base(vendor_name="ANTHROPIC", currency_code="INR"),
+                    parsed_base(vendor_name="ADOBE IRELAND", is_overseas=False,
+                                currency_code="INR"),
+                    "ADOBE IRELAND") is None
+                assert determine_overseas_status(
+                    parsed_base(vendor_name="ANTHROPIC", currency_code="USD"),
                     "ANTHROPIC") is True
                 assert determine_overseas_status(
                     parsed_base(vendor_name="LOCAL SUPPLIER", is_overseas=False,
@@ -2674,6 +2773,16 @@ def _business_test():
                 assert determine_overseas_status(
                     parsed_base(is_overseas="false", currency_code="INR"),
                     "LOCAL SUPPLIER") is False
+                # Audit A5: signals match whole words only.
+                _OVERSEAS_VENDOR_SIGNALS.update({"AWS", "AMAZON WEB"})
+                assert determine_overseas_status(
+                    parsed_base(is_overseas=False, currency_code="INR"),
+                    "DAWSON LOGISTICS PVT LTD") is False
+                assert determine_overseas_status(
+                    parsed_base(is_overseas=False, currency_code="INR"), "AWS EUROPE") is None
+                assert determine_overseas_status(
+                    parsed_base(is_overseas=True, currency_code="INR"),
+                    "Amazon Web Services EMEA SARL") is True
             finally:
                 _OVERSEAS_VENDOR_SIGNALS.clear()
                 _OVERSEAS_VENDOR_SIGNALS.update(old)
@@ -2699,6 +2808,28 @@ def _business_test():
                 "LOCAL SUPPLIER", "27ABCDE1234F1Z5")
             assert freight["is_freight"] is True
             assert freight["tax_id_key"] == "cgst_sgst_5"
+            # Audit A5: an Indian GSTIN (master or invoice) blocks reverse charge.
+            for parsed, gst_no in ((parsed_base(currency_code="USD"), "27ABCDE1234F1Z5"),
+                                   (parsed_base(is_overseas=True, vendor_gstin="24ABCDE1234F1Z5"), "")):
+                r = determine_tax_route(parsed, "LOCAL SUPPLIER", gst_no)
+                assert r["review_required"] is True
+                assert r["review_reason"] == "indian_gstin_vendor_with_overseas_signal"
+            r = determine_tax_route(parsed_base(currency_code="USD", vendor_gstin="9917USA29001OSE"),
+                                    "OVERSEAS LTD", "")
+            assert r["tax_mode"] == "rcm" and r["review_required"] is False
+
+        def t_existing_bill_lookup():
+            index = {}
+            for number, vendor in (("INV-1001", "V1"), ("SCS/26/7", "V2"), ("X-9", "")):
+                index.setdefault(_bill_key(number), []).append(
+                    {"bill_number": number, "vendor_id": vendor, "bill_id": "1"})
+            assert find_existing_bill(index, "V1", "inv-1001")[0] == "exact"
+            assert find_existing_bill(index, "V1", "INV1001")[0] == "variant"
+            # Audit F05: another vendor's bill with the same number is not a duplicate.
+            assert find_existing_bill(index, "V2", "INV-1001") == (None, [])
+            assert find_existing_bill(index, "V2", "SCS/26/7")[0] == "exact"
+            # A listed bill with no vendor cannot be ruled out: a human decides.
+            assert find_existing_bill(index, "V3", "X9")[0] == "variant"
 
         def t_overseas_vendor_charged_indian_gst_stop():
             r = determine_tax_route(
@@ -3009,7 +3140,7 @@ def _business_test():
             assert validate_before_post(discount_bill, "V1") is None
 
         def t_cache_behavior():
-            assert _PARSER_VERSION == 6
+            assert _PARSER_VERSION == 7
             file_hash = "abc123"
             valid = _make_cache_entry(parsed_base(), file_hash, vendor_context_count=2)
             assert _cache_lookup({file_hash: {"bill_number": "INV123"}}, file_hash) is None
@@ -3211,6 +3342,7 @@ def _business_test():
 
         check("determine_overseas_status", t_overseas_status)
         check("determine_tax_route", t_tax_route)
+        check("existing_bill_lookup", t_existing_bill_lookup)
         check("overseas_vendor_charged_indian_gst_stop", t_overseas_vendor_charged_indian_gst_stop)
         check("created_bill_id", t_created_bill_id)
         check("build_payload", t_build_payload)

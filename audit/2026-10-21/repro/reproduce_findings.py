@@ -107,7 +107,18 @@ def zoho_bill_for(parsed, vendor_id, **overrides):
     return bill
 
 
+def existing_index(existing_bills):
+    if not hasattr(zb, "_bill_key"):  # pre-F05 code has no vendor-scoped index
+        return {number.upper() for number, _ in existing_bills}
+    index = {}
+    for number, vendor_id in existing_bills:
+        index.setdefault(zb._bill_key(number), []).append(
+            {"bill_number": number, "vendor_id": vendor_id, "bill_id": "1"})
+    return index
+
+
 def run_pipeline(parsed, zoho_bill, existing_bills=(), usd_rate=83.0, approver=None, tmp=None):
+    """existing_bills: (bill_number, vendor_id) pairs already in Zoho."""
     """Run zoho_bills.main() for one PDF with every external call faked.
 
     Pass the previous result's tmp to keep state (approval queue, logs) and the
@@ -144,7 +155,8 @@ def run_pipeline(parsed, zoho_bill, existing_bills=(), usd_rate=83.0, approver=N
         "VENDOR_RULES_PATH": str(SRC / "vendor_rules.json"),
         "refresh_token": lambda: None,
         "fetch_tax_ids_from_zoho": lambda rules, run_id="unset": rules,
-        "fetch_existing_bills": lambda: set(existing_bills),
+        "fetch_existing_bills": lambda: {number.upper() for number, _ in existing_bills},
+        "fetch_existing_bill_index": lambda: existing_index(existing_bills),
         "fetch_vendors": lambda: copy.deepcopy(VENDORS),
         "parse_pdf_with_claude": lambda fp, fn, vl: copy.deepcopy(parsed),
         "extract_text_from_pdf": lambda fp: "",
@@ -269,16 +281,17 @@ def check_f03():
 
 
 def check_f05():
-    # Zoho already holds bill 'INV-1001' from some other vendor.
+    # Zoho already holds bill 'INV-1001' from some other vendor (9999).
     parsed = domestic_invoice(bill_number="INV-1001")
-    r = run_pipeline(parsed, zoho_bill_for(parsed, "9001"), existing_bills={"INV-1001"})
+    r = run_pipeline(parsed, zoho_bill_for(parsed, "9001"), existing_bills=[("INV-1001", "9999")])
     w_status, _ = watcher_status(r)
     skipped = statuses(r) == ["skipped_duplicate"] and not r["posts"]
-    record("F05", "DEFECT" if skipped else "FAIL-SAFE",
+    same_vendor = run_pipeline(parsed, zoho_bill_for(parsed, "9001"), existing_bills=[("INV-1001", "9001")])
+    record("F05", "DEFECT" if skipped or statuses(same_vendor) != ["skipped_duplicate"] else "FAIL-SAFE",
            "A different vendor's bill with the same number is silently skipped as a duplicate",
-           f"existing bill numbers carry no vendor: {sorted(set(['INV-1001']))}; "
-           f"posts={len(r['posts'])}; invoice_log={statuses(r)}; watcher status={w_status!r} "
-           f"-> should_mark_seen={watcher.should_mark_seen(w_status)}")
+           f"other vendor's INV-1001 -> invoice_log={statuses(r)}, watcher status={w_status!r} "
+           f"(should_mark_seen={watcher.should_mark_seen(w_status)}); "
+           f"same vendor's INV-1001 -> {statuses(same_vendor)}")
 
 
 def check_a5_usd_domestic_vendor():
@@ -341,10 +354,11 @@ def check_f06():
             result = zb.parse_pdf_with_claude_once(f.name, "multi.pdf", ["A"])
     finally:
         os.unlink(f.name)
-    kept = result.get("bill_number") if isinstance(result, dict) else None
-    record("F06", "DEFECT" if isinstance(result, dict) else "FAIL-SAFE",
+    kept = [i.get("bill_number") for i in result.get("invoices", [])] or [result.get("bill_number")]
+    held = result.get("multi_invoice_count") == 2 and len(kept) == 2 and result.get("confidence") == "low"
+    record("F06", "FAIL-SAFE" if held else "DEFECT",
            "A PDF with two invoices yields one bill; the other is dropped without review",
-           f"extractor returned 2 invoices -> kept {kept!r}, dropped 'PLATFORM-FEE-1'")
+           f"extractor returned 2 invoices -> kept {kept!r}, held for review={held}")
 
 
 def payload_line(**item):
@@ -379,8 +393,8 @@ def check_a5_substring():
         "DAWSON LOGISTICS PVT LTD", vendor_gst_no="27AAAAA0000A1Z5")
     record("A5", "DEFECT" if route["tax_mode"] == "rcm" else "FAIL-SAFE",
            "Overseas signal is a substring test on the vendor name and ignores the GSTIN",
-           f"'DAWSON' contains 'AWS' -> tax_mode={route['tax_mode']}, "
-           f"review_required={route['review_required']} despite Indian GSTIN 27AAAAA0000A1Z5")
+           f"'DAWSON' contains 'AWS', vendor GSTIN 27AAAAA0000A1Z5 -> tax_mode={route['tax_mode']}, "
+           f"review_required={route['review_required']}")
 
 
 def check_f08():

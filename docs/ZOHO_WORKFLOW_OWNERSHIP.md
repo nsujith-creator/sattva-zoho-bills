@@ -1,0 +1,15 @@
+# Sattva Zoho Books ownership policy (owner-confirmed 22 Oct 2026)
+
+This is the authoritative workflow scope. Do not infer duties from the title "accountant".
+
+**Sujith owns:** purchasing, receiving original supplier invoices, entering/reviewing purchase bills in Zoho (including use of the private vendor-bill automation), banking and payments, actual INR debits, vendor masters, invoice corrections, GST portal and Zoho access, and explicit approval of every accounting change and return filing. He has complete access to Sattva records.
+
+**Tanvi's narrow assignment:** GST filing from the Zoho entries and GST portal records available to her: monthly IFF and quarterly GSTR-1/GSTR-3B under QRMP. Where appropriately qualified, she may handle professional signoff. She does NOT receive supplier invoices by default, originate or correct purchase bills, handle payments, reconstruct exchange rates, audit bills, debug automation, or know about invoices never supplied to her. Never assign these tasks to Tanvi or tell her about the bill automation. Only send concise, owner-approved questions concerning actual GST return drafts, filed returns, tax paid or the portal. Do not infer she personally holds a CA credential.
+
+**ChatGPT and Claude own investigations:** compare original PDFs, complete Zoho records, bank/card evidence and available GST-return extracts, verify historical invoice identity and amounts, RCM, ITC, FX, missing bills, and automation defects, documenting evidence privately. Distinguish invoice GST from ITC booked in Zoho, GSTR-2B appearance, ITC actually claimed, and tax paid. An 80-bill partial export cannot prove a bill missing from a 1,160-bill population. Bank debit measures amount paid, not necessarily the statutory/accounting FX rate.
+
+**Current cautions:** Sept CMA CGM wrong-state/tax-head entry was corrected in Zoho by owner; current record still needs independent read-only verification. Four Maersk Maharashtra invoices charge CGST+SGST; their Zoho booking and ITC claim status is unverified. Earlier 'ITC not yet booked' wording was not established. The Jul-Sep 2026 GSTR-3B was not filed when owner last reported on Oct 22. RCM ₹3,585.28 is an audit estimate pending filings. Monthly-filing-based interest estimates are invalid for the owner's quarterly GSTR-3B cadence.
+
+**Safety/coordination:** No financial writes, return filings, amendments, IMS actions, production restarts, or external communication without Sujith's explicit approval. No confidential invoices, GSTINs or credentials on GitHub. Keep findings redacted on Issue #12. Avoid repeated reports, token waste, ungrounded assumptions, and assigning owner tasks to Tanvi.
+
+**Claude continuity:** Read this file at every scheduled 09:32 IST work run; update persistent project notes to link to it and confirm the updated memory/scheduler on Issue #12. Do not claim successful persistence without verification.

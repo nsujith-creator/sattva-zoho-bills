@@ -7,6 +7,8 @@ import json
 import os
 import secrets
 import sqlite3
+import threading
+from extraction import request_anthropic, configured
 from review import render, validate_draft, init_db as init_reviews, DraftError
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -93,6 +95,7 @@ def init_db(db_path):
         db.execute('PRAGMA synchronous=FULL')
         db.execute('CREATE TABLE IF NOT EXISTS invoices (id TEXT PRIMARY KEY, filename TEXT NOT NULL, sha256 TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, pdf BLOB NOT NULL)')
         init_reviews(db)
+        db.execute('CREATE TABLE IF NOT EXISTS suggestions (invoice_id TEXT PRIMARY KEY REFERENCES invoices(id), payload_json TEXT NOT NULL, created_at TEXT NOT NULL)')
 
 
 def template(rows, csrf):
@@ -119,6 +122,7 @@ class Server(ThreadingHTTPServer):
     def __init__(self, addr, handler, db, user, password):
         super().__init__(addr, handler)
         self.db_path = db
+        self.extract_lock = threading.Lock()
         self.username = user
         self.password = password
         self.csrf = hmac.new(password.encode('utf8'), b'sattva-review-upload-v1', hashlib.sha256).hexdigest()
@@ -185,11 +189,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.err(404, 'Invoice not found')
                 return
             with connect(self.server.db_path) as db:
-                row = db.execute('SELECT i.filename, r.fields_json FROM invoices i LEFT JOIN reviews r ON r.invoice_id=i.id WHERE i.id=?', (doc_id,)).fetchone()
+                row = db.execute('SELECT i.filename, r.fields_json, s.payload_json FROM invoices i LEFT JOIN reviews r ON r.invoice_id=i.id LEFT JOIN suggestions s ON s.invoice_id=i.id WHERE i.id=?', (doc_id,)).fetchone()
             if not row:
                 self.err(404, 'Invoice not found')
                 return
-            self.reply(200, render(doc_id, row[0], json.loads(row[1]) if row[1] else None, self.server.csrf).encode(), 'text/html; charset=utf-8')
+            self.reply(200, render(doc_id, row[0], json.loads(row[1]) if row[1] else None, self.server.csrf, json.loads(row[2]) if row[2] else None, configured()).encode(), 'text/html; charset=utf-8')
         elif path.startswith('/invoice/'):
             doc_id = path.removeprefix('/invoice/')
             if len(doc_id) != 32 or any(ch not in '0123456789abcdef' for ch in doc_id):
@@ -203,6 +207,43 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, row[0], 'application/pdf', {'Content-Disposition':'inline; filename="invoice.pdf"'})
         else:
             self.err(404, 'Page not found')
+
+    def extract_pdf(self, doc_id):
+        if len(doc_id) != 32 or any(c not in '0123456789abcdef' for c in doc_id):
+            self.err(404, 'Invoice not found')
+            return
+        if not secrets.compare_digest(self.headers.get('X-CSRF-Token',''), self.server.csrf):
+            self.err(403, 'Extraction token missing.')
+            return
+        if self.headers.get('Content-Length') not in (None, '0'):
+            self.err(400, 'Extraction request body must be empty.')
+            return
+        if not configured():
+            self.err(503, 'AI extraction is disabled.')
+            return
+        if not self.server.extract_lock.acquire(blocking=False):
+            self.err(409, 'Another extraction is in progress.')
+            return
+        try:
+            with connect(self.server.db_path) as db:
+                row = db.execute('SELECT i.filename, i.pdf, s.payload_json FROM invoices i LEFT JOIN suggestions s ON s.invoice_id=i.id WHERE i.id=?', (doc_id,)).fetchone()
+            if not row:
+                self.err(404, 'Invoice not found')
+                return
+            if row[2]:
+                result = json.loads(row[2])
+                result['cached'] = True
+            else:
+                try:
+                    result = request_anthropic(row[1],row[0],os.environ['ANTHROPIC_API_KEY'])
+                except Exception:
+                    self.err(502, 'AI extraction failed; draft unchanged.')
+                    return
+                with connect(self.server.db_path) as db:
+                    db.execute('INSERT OR IGNORE INTO suggestions(invoice_id,payload_json,created_at) VALUES (?,?,?)',(doc_id,json.dumps(result,ensure_ascii=False),datetime.now(timezone.utc).isoformat()))
+            self.reply(200,json.dumps(result,ensure_ascii=False).encode('utf-8'),'application/json; charset=utf-8')
+        finally:
+            self.server.extract_lock.release()
 
     def save_review(self, doc_id):
         if len(doc_id) != 32 or any(ch not in '0123456789abcdef' for ch in doc_id):
@@ -243,6 +284,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self.guard():
             return
         path = urlsplit(self.path).path
+        if path.startswith('/api/extract/'):
+            self.extract_pdf(path.removeprefix('/api/extract/'))
+            return
         if path.startswith('/api/reviews/'):
             self.save_review(path.removeprefix('/api/reviews/'))
             return

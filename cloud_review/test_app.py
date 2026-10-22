@@ -127,5 +127,38 @@ class InboxTests(unittest.TestCase):
         code, body = self.request("GET","/review/"+doc,headers={"Authorization":self.auth})
         self.assertIn(b'118.00',body)
 
+
+    def test_08_extraction_disabled_even_when_authenticated(self):
+        import json
+        data = PDF + b"\nextract-disabled-case\n"
+        code, raw = self.request("POST", "/api/invoices", data, self.headers())
+        self.assertEqual(201, code)
+        doc = json.loads(raw)["id"]
+        self.assertEqual(401, self.request("POST", "/api/extract/"+doc)[0])
+        self.assertEqual(403, self.request("POST", "/api/extract/"+doc,
+                         headers={"Authorization":self.auth})[0])
+        self.assertEqual(503, self.request("POST", "/api/extract/"+doc,
+                         headers={"Authorization":self.auth,"X-CSRF-Token":self.csrf})[0])
+
+    def test_09_invoice_rejected_for_wrong_content_length(self):
+        import http.client
+        self.assertEqual(415,self.request("POST","/api/invoices",PDF,
+                    {**self.headers(),"Content-Type":"text/plain"})[0])
+
+    def test_10_no_read_or_write_to_unknown_invoice(self):
+        fake="a"*32
+        self.assertEqual(404,self.request("GET","/review/"+fake,
+                         headers={"Authorization":self.auth})[0])
+        self.assertEqual(404,self.request("GET","/invoice/"+fake,
+                         headers={"Authorization":self.auth})[0])
+        h={"Authorization":self.auth,"Content-Type":"application/json","X-CSRF-Token":self.csrf}
+        self.assertEqual(400,self.request("POST","/api/reviews/"+fake,b"{}",h)[0])
+
+    def test_11_unsupported_mutation_endpoints(self):
+        self.assertEqual(404,self.request("POST","/api/zoho/post",b"",
+                    {"Authorization":self.auth})[0])
+        self.assertEqual(404,self.request("GET","/api/zoho/bills",
+                    headers={"Authorization":self.auth})[0])
+
 if __name__ == "__main__":
     unittest.main()

@@ -101,5 +101,31 @@ class InboxTests(unittest.TestCase):
         p = subprocess.run([sys.executable, str(APP)], env=env, capture_output=True, timeout=3)
         self.assertNotEqual(0, p.returncode)
 
+
+    def test_07_review_save_and_validation(self):
+        import json
+        pdf = PDF + b'\nreview-case\n'
+        code, body = self.request("POST", "/api/invoices", pdf, self.headers())
+        self.assertEqual(201, code, body)
+        doc = json.loads(body)["id"]
+        self.assertEqual(401, self.request("GET", "/review/" + doc)[0])
+        self.assertEqual(403, self.request("POST", "/api/reviews/"+doc, b"{}", {"Authorization":self.auth,"Content-Type":"application/json"})[0])
+        fields = dict(supplier="Synthetic carrier", gstin="", invoice_number="TEST-7",
+                      invoice_date="2026-10-20",currency="INR",subtotal="100.00",
+                      cgst="9.00",sgst="9.00",igst="0",discount="0",total="118.00",notes="")
+        headers={"Authorization":self.auth,"Content-Type":"application/json","X-CSRF-Token":self.csrf}
+        code, body = self.request("POST", "/api/reviews/"+doc, json.dumps(fields).encode(), headers)
+        self.assertEqual(200,code,body)
+        self.assertEqual(False,json.loads(body)["pdf_verified"])
+        code, body = self.request("GET","/review/"+doc,headers={"Authorization":self.auth})
+        self.assertEqual(200, code)
+        self.assertIn(b'118.00',body)
+        fields["total"]="119.00"
+        code, body = self.request("POST","/api/reviews/"+doc,json.dumps(fields).encode(),headers)
+        self.assertEqual(400,code)
+        self.assertIn(b"don't add up",body)
+        code, body = self.request("GET","/review/"+doc,headers={"Authorization":self.auth})
+        self.assertIn(b'118.00',body)
+
 if __name__ == "__main__":
     unittest.main()

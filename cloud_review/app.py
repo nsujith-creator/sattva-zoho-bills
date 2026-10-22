@@ -7,6 +7,7 @@ import json
 import os
 import secrets
 import sqlite3
+from review import render, validate_draft, init_db as init_reviews, DraftError
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -91,15 +92,16 @@ def init_db(db_path):
         db.execute('PRAGMA journal_mode=WAL')
         db.execute('PRAGMA synchronous=FULL')
         db.execute('CREATE TABLE IF NOT EXISTS invoices (id TEXT PRIMARY KEY, filename TEXT NOT NULL, sha256 TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, pdf BLOB NOT NULL)')
+        init_reviews(db)
 
 
 def template(rows, csrf):
     parts = []
-    for doc_id, filename, when in rows:
+    for doc_id, filename, when, review_saved in rows:
         safe_id = html.escape(doc_id, quote=True)
         display = html.escape(filename)
         ts = html.escape(when[:16].replace('T', ' ') + ' UTC')
-        parts.append(f'<div class="invoice"><a href="/invoice/{safe_id}" target="_blank" rel="noopener">{display}</a><span class="stamp">{ts}</span><span class="status">Awaiting review</span></div>')
+        parts.append(f'<div class="invoice"><a href="/review/{safe_id}">{display}</a><span class="stamp">{ts}</span><span class="status">{"Manual draft saved · Not verified" if review_saved else "Awaiting manual entry"}</span></div>')
     content = ''.join(parts) if parts else '<div class="empty">No invoices yet. Upload the first PDF to start the review inbox.</div>'
     return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf-token" content="{html.escape(csrf, quote=True)}"><title>Sattva · Bills Review</title><style>{CSS}</style></head><body>
 <header><div class="brand">SATTVA <span>Bills review</span></div><div class="mode">Private preview · No posting</div></header>
@@ -175,8 +177,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == '/':
             with connect(self.server.db_path) as db:
-                rows = db.execute('SELECT id, filename, created_at FROM invoices ORDER BY created_at DESC, id DESC LIMIT 500').fetchall()
+                rows = db.execute('SELECT i.id, i.filename, i.created_at, r.invoice_id IS NOT NULL FROM invoices i LEFT JOIN reviews r ON r.invoice_id=i.id ORDER BY i.created_at DESC, i.id DESC LIMIT 500').fetchall()
             self.reply(200, template(rows, self.server.csrf).encode(), 'text/html; charset=utf-8')
+        elif path.startswith('/review/'):
+            doc_id = path.removeprefix('/review/')
+            if len(doc_id) != 32 or any(ch not in '0123456789abcdef' for ch in doc_id):
+                self.err(404, 'Invoice not found')
+                return
+            with connect(self.server.db_path) as db:
+                row = db.execute('SELECT i.filename, r.fields_json FROM invoices i LEFT JOIN reviews r ON r.invoice_id=i.id WHERE i.id=?', (doc_id,)).fetchone()
+            if not row:
+                self.err(404, 'Invoice not found')
+                return
+            self.reply(200, render(doc_id, row[0], json.loads(row[1]) if row[1] else None, self.server.csrf).encode(), 'text/html; charset=utf-8')
         elif path.startswith('/invoice/'):
             doc_id = path.removeprefix('/invoice/')
             if len(doc_id) != 32 or any(ch not in '0123456789abcdef' for ch in doc_id):
@@ -191,10 +204,49 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.err(404, 'Page not found')
 
+    def save_review(self, doc_id):
+        if len(doc_id) != 32 or any(ch not in '0123456789abcdef' for ch in doc_id):
+            self.err(404, 'Invoice not found')
+            return
+        if not secrets.compare_digest(self.headers.get('X-CSRF-Token', ''), self.server.csrf):
+            self.err(403, 'Review token missing. Refresh and retry.')
+            return
+        if self.headers.get('Content-Type', '').split(';')[0].strip().lower() != 'application/json':
+            self.err(415, 'Expected JSON fields.')
+            return
+        if self.headers.get('Transfer-Encoding'):
+            self.err(400, 'Chunked requests unsupported.')
+            return
+        try:
+            length = int(self.headers.get('Content-Length', ''))
+        except ValueError:
+            self.err(411, 'Request length required.')
+            return
+        if length <= 0 or length > 16384:
+            self.err(413, 'Review data too large or empty.')
+            return
+        try:
+            fields = validate_draft(json.loads(self.rfile.read(length)))
+        except (ValueError, UnicodeError) as e:
+            self.err(400, str(e) if isinstance(e, DraftError) else 'Invalid review fields.')
+            return
+        with connect(self.server.db_path) as db:
+            if not db.execute('SELECT 1 FROM invoices WHERE id=?', (doc_id,)).fetchone():
+                self.err(404, 'Invoice not found')
+                return
+            db.execute('INSERT INTO reviews(invoice_id,fields_json,saved_at) VALUES (?,?,?) '
+                       'ON CONFLICT(invoice_id) DO UPDATE SET fields_json=excluded.fields_json,saved_at=excluded.saved_at',
+                       (doc_id, json.dumps(fields, ensure_ascii=False), datetime.now(timezone.utc).isoformat()))
+        self.reply(200, b'{"status":"manual_draft_saved","pdf_verified":false,"posted_to_zoho":false}', 'application/json; charset=utf-8')
+
     def do_POST(self):
         if not self.guard():
             return
-        if urlsplit(self.path).path != '/api/invoices':
+        path = urlsplit(self.path).path
+        if path.startswith('/api/reviews/'):
+            self.save_review(path.removeprefix('/api/reviews/'))
+            return
+        if path != '/api/invoices':
             self.err(404, 'Endpoint not found')
             return
         if not secrets.compare_digest(self.headers.get('X-CSRF-Token',''), self.server.csrf):

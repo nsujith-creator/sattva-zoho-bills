@@ -28,3 +28,8 @@ On Windows, supply environment variables using the platform shell. Use `PORT` fo
 ## Local verification
 
 `python -m unittest discover -s cloud_review -p 'test_*.py' -v` from the repository root. Tests use only synthetic PDFs, an ephemeral port and a temporary SQLite database.
+## Manual invoice draft review (PR #13 additional slice)
+
+After upload, select an invoice in the inbox. A draft form captures supplier, GSTIN, invoice number/date, invoice currency, subtotal, CGST, SGST, IGST, discount/credit, printed payable and notes. Save preserves exact decimal amounts in a separate SQLite table. It checks only the typed arithmetic, rejects mismatches and unsafe input, and preserves the earlier valid draft when an edit fails. Status explicitly says **manual draft saved, NOT source verified**. The original PDF is available separately.
+
+No extraction, source-PDF parity, purchase bill approval, tax eligibility judgment, Zoho GET/POST, or financial posting is present. This is strictly an internal review prototype; do not deploy for real invoices until production authentication, backups, private volumes and access policies have been verified.

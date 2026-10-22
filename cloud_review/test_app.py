@@ -140,7 +140,7 @@ class InboxTests(unittest.TestCase):
         self.assertEqual(503, self.request("POST", "/api/extract/"+doc,
                          headers={"Authorization":self.auth,"X-CSRF-Token":self.csrf})[0])
 
-    def test_09_invoice_rejected_for_wrong_content_length(self):
+    def test_09_invoice_rejected_for_wrong_media_type(self):
         import http.client
         self.assertEqual(415,self.request("POST","/api/invoices",PDF,
                     {**self.headers(),"Content-Type":"text/plain"})[0])

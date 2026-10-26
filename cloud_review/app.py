@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, quote
+from auth import OwnerSessions, cookie_value
 
 MAX_PDF = 12 * 1024 * 1024
 
@@ -21,7 +23,7 @@ CSS = r'''
 :root { color-scheme:light; --ink:#112033; --muted:#5a6b7f; --line:#d9e0e8; --accent:#245ddc; --paper:#fff; --wash:#f3f6fa; }
 * { box-sizing:border-box; }
 body { margin:0; color:var(--ink); background:var(--paper); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; -webkit-font-smoothing:antialiased; }
-header { display:flex; justify-content:space-between; align-items:center; padding:17px clamp(18px,4vw,64px); border-bottom:1px solid var(--line); }
+header { display:flex; flex-wrap:wrap; gap:12px; justify-content:space-between; align-items:center; padding:17px clamp(18px,4vw,64px); border-bottom:1px solid var(--line); }
 .brand { font-size:15px; letter-spacing:-.3px; font-weight:760; }.brand span { color:var(--muted); font-weight:500; margin-left:12px; border-left:1px solid #aab6c4; padding-left:12px; }
 .mode { font-size:11px; letter-spacing:.12em; font-weight:730; color:#506274; text-transform:uppercase; }
 main { width:min(960px,calc(100% - 36px)); margin:clamp(36px,7vw,88px) auto 100px; }
@@ -76,10 +78,15 @@ function show(t, error=false) { message.textContent=t; message.className = error
 
 def require_settings():
     user = os.environ.get('APP_USERNAME', '')
-    password = os.environ.get('APP_PASSWORD', '')
+    password = os.environ.get('APP_PASSWORD_HASH', '') or os.environ.get('APP_PASSWORD', '')
     data_dir = os.environ.get('DATA_DIR', '')
     if not user or len(password) < 16 or not data_dir or not Path(data_dir).is_absolute():
-        raise RuntimeError('Set APP_USERNAME, APP_PASSWORD (16+ chars), absolute DATA_DIR. Refusing insecure startup.')
+        raise RuntimeError('Set APP_USERNAME, APP_PASSWORD_HASH and absolute DATA_DIR. Local test passwords also require APP_ALLOW_LOCAL_HTTP=1.')
+    local_http = os.environ.get('APP_ALLOW_LOCAL_HTTP') == '1'
+    if local_http and os.environ.get('BIND', '127.0.0.1') != '127.0.0.1':
+        raise RuntimeError('Local HTTP is allowed only on 127.0.0.1.')
+    if not local_http and not os.environ.get('APP_PASSWORD_HASH', '').startswith('pbkdf2_sha256$'):
+        raise RuntimeError('Production requires APP_PASSWORD_HASH and HTTPS.')
     return user, password, Path(data_dir)
 
 
@@ -119,13 +126,16 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, addr, handler, db, user, password):
+    def __init__(self, addr, handler, db, user, password, local_http=False):
         super().__init__(addr, handler)
         self.db_path = db
         self.extract_lock = threading.Lock()
-        self.username = user
-        self.password = password
-        self.csrf = hmac.new(password.encode('utf8'), b'sattva-review-upload-v1', hashlib.sha256).hexdigest()
+        if local_http and addr[0] != '127.0.0.1':
+            raise ValueError('Insecure cookies require loopback binding.')
+        self.auth = OwnerSessions(password)
+        self.local_http = local_http
+        self.session_cookie = 'sattva_session' if local_http else '__Host-sattva_session'
+        self.login_cookie = 'sattva_login' if local_http else '__Host-sattva_login'
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -137,6 +147,12 @@ class Handler(BaseHTTPRequestHandler):
         print('request completed', flush=True)
 
     def reply(self, code, payload=b'', content_type='text/plain; charset=utf-8', headers=None):
+        if content_type.startswith('text/html') and getattr(self, 'session', None):
+            logout = ('<form method="post" action="/logout" style="display:inline;margin:0">'
+                      '<input type="hidden" name="csrf" value="'+html.escape(self.session['csrf'], quote=True)+'">'
+                      '<button type="submit" style="background:transparent;color:var(--accent);border:1px solid var(--line);padding:8px 12px;font-size:13px">Sign out</button></form>')
+            payload = payload.replace(b'</header>', (logout+'</header>').encode(), 1)
+            payload = payload.replace(b'</body>', b'<script>addEventListener("pageshow",e=>{if(e.persisted)location.reload();});</script></body>')
         self.send_response(code)
         self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(payload)))
@@ -145,6 +161,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Referrer-Policy', 'no-referrer')
         self.send_header('X-Frame-Options', 'DENY')
         self.send_header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+        if not self.server.local_http:
+            self.send_header('Strict-Transport-Security', 'max-age=31536000')
         if headers:
             for k, v in headers.items():
                 self.send_header(k, v)
@@ -155,34 +173,87 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(code, json.dumps({'error': message}).encode(), 'application/json; charset=utf-8')
 
     def authorized(self):
-        header = self.headers.get('Authorization', '')
-        if not header.startswith('Basic '):
-            return False
-        try:
-            decoded = base64.b64decode(header[6:], validate=True).decode('utf8')
-            name, password = decoded.split(':', 1)
-        except (ValueError, UnicodeError):
-            return False
-        return (secrets.compare_digest(name, self.server.username)
-                and secrets.compare_digest(password, self.server.password))
+        token = cookie_value(self.headers.get('Cookie', ''), self.server.session_cookie)
+        self.session = self.server.auth.lookup(token)
+        return self.session is not None
 
     def guard(self):
         if not self.authorized():
-            self.reply(401, b'Authentication required', headers={'WWW-Authenticate':'Basic realm="Sattva Bills", charset="UTF-8"'})
+            if self.command == 'GET' and not self.path.startswith('/api/'):
+                self.reply(303, headers={'Location':'/login?next='+quote(self.safe_next(self.path),safe='')})
+            else:
+                self.err(401, 'Your session has ended. Sign in again; saved invoices and drafts are unchanged.')
             return False
         return True
+
+    @staticmethod
+    def safe_next(value):
+        import re
+        path = urlsplit(value or '/').path
+        return path if path == '/' or re.fullmatch(r'/(?:review|invoice)/[0-9a-f]{32}', path) else '/'
+
+    def auth_cookie(self, name, value, max_age):
+        return name+'='+value+'; Path=/; HttpOnly; SameSite=Strict; Max-Age='+str(max_age)+('' if self.server.local_http else '; Secure')
+
+    def login_page(self, message='', code=200, destination='/'):
+        token = self.server.auth.form(self.client_address[0])
+        esc = lambda s:html.escape(s,quote=True)
+        page = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · Sattva Bills</title><style>{CSS}
+main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%}}h1{{font-size:42px;line-height:1.08}}label{{display:block;font-size:14px;font-weight:650;margin:28px 0 8px}}input[type=password]{{width:100%;font:18px system-ui;padding:13px;border:1px solid #a6b6c8;border-radius:6px}}.sign-in{{width:100%;margin-top:18px}}.login-message{{font-size:14px;line-height:1.5;color:#a12727;min-height:25px}}.privacy{{color:var(--muted);font-size:13px;line-height:1.6;margin-top:26px}}</style></head><body>
+<header><div class="brand">SATTVA <span>Bills review</span></div><div class="mode">Owner access</div></header><main><div class="eyebrow">PRIVATE INVOICE INBOX</div><h1>Sign in to<br>your bills.</h1><p class="lede">Open your supplier invoices and saved drafts.</p><p class="login-message" role="alert">{esc(message)}</p>
+<form method="post" action="/login"><input type="hidden" name="csrf" value="{esc(token)}"><input type="hidden" name="next" value="{esc(self.safe_next(destination))}"><label for="password">Owner password</label><input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required><button class="sign-in" type="submit">Sign in</button></form><p class="privacy">For Sattva's owner only. Signing in opens the private review inbox; it does not approve or post a bill. You'll be asked to sign in again after 30 minutes away.</p></main><script>document.querySelector('form').addEventListener('submit',()=>{{const b=document.querySelector('button');b.disabled=true;b.textContent='Signing in…';}});</script></body></html>'''
+        self.reply(code,page.encode(),'text/html; charset=utf-8',{'Set-Cookie':self.auth_cookie(self.server.login_cookie,token,600)})
+
+    def auth_form(self):
+        if self.headers.get('Transfer-Encoding') or self.headers.get('Content-Type','').split(';')[0] != 'application/x-www-form-urlencoded':
+            self.err(400,'Refresh the sign-in page and try again.');return None
+        try:length=int(self.headers.get('Content-Length','0'))
+        except ValueError:length=0
+        if not 0 < length <= 4096:
+            self.err(400,'Refresh the sign-in page and try again.');return None
+        try:return {k:v[0] for k,v in parse_qs(self.rfile.read(length).decode('utf8'),keep_blank_values=True).items()}
+        except (UnicodeError,ValueError):self.err(400,'Refresh the sign-in page and try again.');return None
+
+    def login_submit(self):
+        form=self.auth_form()
+        if form is None:return
+        nonce=cookie_value(self.headers.get('Cookie',''),self.server.login_cookie)
+        token,error=self.server.auth.login(nonce,form.get('csrf',''),form.get('password',''),self.client_address[0])
+        if error:
+            message={'invalid':'That password did not match. Try again.','throttled':'Too many sign-in attempts. Please wait 15 minutes before trying again.','form_expired':'This sign-in page expired. Please try again.'}[error]
+            self.login_page(message,429 if error=='throttled' else 400 if error=='form_expired' else 401,form.get('next','/'));return
+        old=cookie_value(self.headers.get('Cookie',''),self.server.session_cookie)
+        self.server.auth.logout(old)
+        self.reply(303,headers={'Location':self.safe_next(form.get('next')),'Set-Cookie':self.auth_cookie(self.server.session_cookie,token,43200)})
+
+    def logout_submit(self):
+        form=self.auth_form()
+        if form is None:return
+        if not secrets.compare_digest(form.get('csrf',''),self.session['csrf']):
+            self.err(403,'Sign-out token missing. Refresh and try again.');return
+        self.server.auth.logout(cookie_value(self.headers.get('Cookie',''),self.server.session_cookie))
+        self.reply(303,headers={'Location':'/login','Set-Cookie':self.auth_cookie(self.server.session_cookie,'',0)})
 
     def do_GET(self):
         path = urlsplit(self.path).path
         if path == '/healthz':
             self.reply(200, b'ok')
             return
+        if path == '/favicon.ico':
+            self.reply(204)
+            return
+        if not self.server.local_http and self.headers.get('X-Forwarded-Proto','').lower() != 'https':
+            self.err(403,'Use the secure HTTPS address to sign in.');return
+        if path == '/login':
+            destination=parse_qs(urlsplit(self.path).query).get('next',['/'])[0]
+            self.login_page(destination=destination)
+            return
         if not self.guard():
             return
         if path == '/':
             with connect(self.server.db_path) as db:
                 rows = db.execute('SELECT i.id, i.filename, i.created_at, r.invoice_id IS NOT NULL FROM invoices i LEFT JOIN reviews r ON r.invoice_id=i.id ORDER BY i.created_at DESC, i.id DESC LIMIT 500').fetchall()
-            self.reply(200, template(rows, self.server.csrf).encode(), 'text/html; charset=utf-8')
+            self.reply(200, template(rows, self.session['csrf']).encode(), 'text/html; charset=utf-8')
         elif path.startswith('/review/'):
             doc_id = path.removeprefix('/review/')
             if len(doc_id) != 32 or any(ch not in '0123456789abcdef' for ch in doc_id):
@@ -193,7 +264,7 @@ class Handler(BaseHTTPRequestHandler):
             if not row:
                 self.err(404, 'Invoice not found')
                 return
-            self.reply(200, render(doc_id, row[0], json.loads(row[1]) if row[1] else None, self.server.csrf, json.loads(row[2]) if row[2] else None, configured()).encode(), 'text/html; charset=utf-8')
+            self.reply(200, render(doc_id, row[0], json.loads(row[1]) if row[1] else None, self.session['csrf'], json.loads(row[2]) if row[2] else None, configured()).encode(), 'text/html; charset=utf-8')
         elif path.startswith('/invoice/'):
             doc_id = path.removeprefix('/invoice/')
             if len(doc_id) != 32 or any(ch not in '0123456789abcdef' for ch in doc_id):
@@ -212,7 +283,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(doc_id) != 32 or any(c not in '0123456789abcdef' for c in doc_id):
             self.err(404, 'Invoice not found')
             return
-        if not secrets.compare_digest(self.headers.get('X-CSRF-Token',''), self.server.csrf):
+        if not secrets.compare_digest(self.headers.get('X-CSRF-Token',''), self.session['csrf']):
             self.err(403, 'Extraction token missing.')
             return
         if self.headers.get('Content-Length') not in (None, '0'):
@@ -249,7 +320,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(doc_id) != 32 or any(ch not in '0123456789abcdef' for ch in doc_id):
             self.err(404, 'Invoice not found')
             return
-        if not secrets.compare_digest(self.headers.get('X-CSRF-Token', ''), self.server.csrf):
+        if not secrets.compare_digest(self.headers.get('X-CSRF-Token', ''), self.session['csrf']):
             self.err(403, 'Review token missing. Refresh and retry.')
             return
         if self.headers.get('Content-Type', '').split(';')[0].strip().lower() != 'application/json':
@@ -281,9 +352,17 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(200, b'{"status":"manual_draft_saved","pdf_verified":false,"posted_to_zoho":false}', 'application/json; charset=utf-8')
 
     def do_POST(self):
+        if not self.server.local_http and self.headers.get('X-Forwarded-Proto','').lower() != 'https':
+            self.err(403,'Use the secure HTTPS address to sign in.');return
+        path = urlsplit(self.path).path
+        if path == '/login':
+            self.login_submit()
+            return
         if not self.guard():
             return
-        path = urlsplit(self.path).path
+        if path == '/logout':
+            self.logout_submit()
+            return
         if path.startswith('/api/extract/'):
             self.extract_pdf(path.removeprefix('/api/extract/'))
             return
@@ -293,7 +372,7 @@ class Handler(BaseHTTPRequestHandler):
         if path != '/api/invoices':
             self.err(404, 'Endpoint not found')
             return
-        if not secrets.compare_digest(self.headers.get('X-CSRF-Token',''), self.server.csrf):
+        if not secrets.compare_digest(self.headers.get('X-CSRF-Token',''), self.session['csrf']):
             self.err(403, 'Upload token missing or invalid. Refresh and retry.')
             return
         if self.headers.get('Transfer-Encoding'):
@@ -337,7 +416,7 @@ def main():
     init_db(db)
     port = int(os.environ.get('PORT', '8080'))
     bind = os.environ.get('BIND', '127.0.0.1')
-    server = Server((bind, port), Handler, db, user, password)
+    server = Server((bind, port), Handler, db, user, password, local_http=os.environ.get('APP_ALLOW_LOCAL_HTTP')=='1')
     print(f'Sattva review-only inbox ready on port {server.server_port}; Zoho integration disabled', flush=True)
     server.serve_forever()
 

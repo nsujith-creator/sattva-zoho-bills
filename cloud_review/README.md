@@ -12,15 +12,15 @@
 ## Run locally (Python 3.12 standard library only)
 
 ```shell
-APP_USERNAME=owner APP_PASSWORD=<long-random-password> DATA_DIR=/absolute/private/path python app.py
+APP_USERNAME=owner APP_PASSWORD=<synthetic-local-test-password> APP_ALLOW_LOCAL_HTTP=1 BIND=127.0.0.1 DATA_DIR=/absolute/private/path python app.py
 ```
 
-On Windows, supply environment variables using the platform shell. Use `PORT` for Railway and `BIND=0.0.0.0` only behind HTTPS with secured external access.
+On Windows, supply environment variables using the platform shell. This loopback page is for development, not the owner credential setup. Production requires `APP_PASSWORD_HASH`, an absolute private `DATA_DIR`, and HTTPS through the trusted Railway proxy. Raw `APP_PASSWORD` is refused outside explicit loopback mode.
 
 ## Production boundaries
 
-- DO NOT DEPLOY TO A PUBLIC DOMAIN UNTIL you have chosen an authentication method suited to real personal financial data (HTTP Basic is **prototype-only**), created a **persistent private Railway volume** mounted at `DATA_DIR`, set secrets through Railway environment variables and completed a backup/restore drill. Railway app ephemeral disk is not safe for real invoices.
-- Basic auth transmits user/password on each request (TLS must be enforced by fronting proxy). A mobile-friendly login and short-lived sessions are required before use with real supplier invoices.
+- DO NOT DEPLOY TO A PUBLIC DOMAIN UNTIL owner credentials have been securely set and live HTTPS verified, a **persistent private Railway volume** has been created mounted at `DATA_DIR`, set secrets through Railway environment variables and completed a backup/restore drill. Railway app ephemeral disk is not safe for real invoices.
+- Owner sign-in now uses a salted PBKDF2-SHA256 verifier (600,000 iterations), revocable random sessions, secure HTTP-only same-site cookies, CSRF protection, logout and login throttling. Sessions expire after 30 minutes idle or 12 hours total. HTTP Basic is refused.
 - Review-only. No vendor extraction, tax calculations, currency conversion, historical migration, Zoho writes, or changes to the live Windows watcher.
 - Never point this app at Sattva CRM storage, databases or domain. Create a separate Railway project, with approval for any paid spend and deployment.
 - SQLite BLOB is used to keep PDF and record metadata together atomically; physical backup/restore remains to be verified before real use.
@@ -41,3 +41,11 @@ A saved invoice PDF can be submitted to Anthropic Claude Haiku `claude-haiku-4-5
 Extraction returns suggestions only. They are stored separately from the manually saved draft; the user may fill *empty fields* but existing edits are never overwritten. Ambiguous/multi-invoice PDFs are flagged or held; GST, reverse charge, ITC, vendor identity, FX, source correctness and final payable are **not certified**. No Zoho request is possible from this module. Failed API calls do not change saved drafts. Retrying a successfully cached response does not call the provider again. All actual financial posting remains disabled.
 
 Offline tests use mocked provider responses and synthetic values. Local implementation verification performed on 23 Oct 2026: 23 tests passed; the extraction comparison screen rendered and its fill-empty interaction passed at 320/360/390/768/1440px. Tests validate protection, not real invoice accuracy. Do not provision or enable production credentials, attach real invoices or deploy until the service's authentication, persistent private storage, restore drill, provider permission/cost and actual invoice-matching gates pass.
+
+## Owner session deployment requirements
+
+Set the password through a private setup interface; never paste it into chat, command history, logs or a repository. `auth.password_hash` produces the server verifier; supply it privately as `APP_PASSWORD_HASH`. Do not store the raw production password. No real owner credential has been created by these tests.
+
+Use one process and one replica: session and throttle state is in memory. Restarting invalidates sessions but preserves invoices and drafts. Only expose the app behind the trusted HTTPS proxy; the app requires `X-Forwarded-Proto: https` in production. Do not expose its origin directly. Five failed logins from one peer in 15 minutes, or 20 globally in one minute, stop further attempts; the proxy may make peers share that limit. Login nonce state and sessions are bounded. A proxy/server restart clears throttling, so edge protection remains a production verification item.
+
+Local tests use synthetic passwords and PDFs only. Production provisioning, owner credential setup, persistent cloud restore, live HTTPS and remote-device verification remain outstanding. Authentication tests do not certify invoice extraction or accounting correctness, and posting remains unavailable.

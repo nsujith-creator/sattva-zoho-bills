@@ -25,7 +25,8 @@ class InboxTests(unittest.TestCase):
         s.close()
         env = os.environ.copy()
         env.update(APP_USERNAME="owner", APP_PASSWORD=PASSWORD, DATA_DIR=cls.folder.name,
-                   PORT=str(cls.port), BIND="127.0.0.1")
+                   PORT=str(cls.port), BIND="127.0.0.1",APP_ALLOW_LOCAL_HTTP="1")
+        env.pop('APP_PASSWORD_HASH',None)
         cls.p = subprocess.Popen([sys.executable, str(APP)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         for _ in range(100):
             if cls.p.poll() is not None:
@@ -42,8 +43,17 @@ class InboxTests(unittest.TestCase):
                 time.sleep(.05)
         else:
             raise RuntimeError("Server did not start")
-        cls.auth = "Basic " + base64.b64encode(b"owner:" + PASSWORD.encode()).decode()
-        cls.csrf = hmac.new(PASSWORD.encode(), b"sattva-review-upload-v1", hashlib.sha256).hexdigest()
+        import re
+        from urllib.parse import urlencode
+        c=http.client.HTTPConnection('127.0.0.1',cls.port,timeout=5)
+        c.request('GET','/login');r=c.getresponse();page=r.read().decode()
+        nonce_cookie=r.getheader('Set-Cookie').split(';')[0]
+        nonce=re.search(r'name="csrf" value="([^"]+)"',page).group(1)
+        c.request('POST','/login',urlencode({'password':PASSWORD,'csrf':nonce}),{'Content-Type':'application/x-www-form-urlencoded','Cookie':nonce_cookie})
+        r=c.getresponse();r.read();assert r.status==303
+        cls.auth=r.getheader('Set-Cookie').split(';')[0]
+        c.request('GET','/',headers={'Cookie':cls.auth});r=c.getresponse();page=r.read().decode();assert r.status==200
+        cls.csrf=re.search(r'name="csrf-token" content="([^"]+)"',page).group(1);c.close()
 
     @classmethod
     def tearDownClass(cls):
@@ -61,15 +71,15 @@ class InboxTests(unittest.TestCase):
         return result
 
     def headers(self):
-        return {"Authorization": self.auth, "Content-Type": "application/pdf",
+        return {"Cookie": self.auth, "Content-Type": "application/pdf",
                 "X-Filename": "example.pdf", "X-CSRF-Token": self.csrf}
 
     def test_01_auth_required(self):
-        self.assertEqual(401, self.request("GET", "/")[0])
+        self.assertEqual(303, self.request("GET", "/")[0])
         self.assertEqual(401, self.request("POST", "/api/invoices", PDF)[0])
 
     def test_02_empty_inbox(self):
-        status, body = self.request("GET", "/", headers={"Authorization":self.auth})
+        status, body = self.request("GET", "/", headers={"Cookie":self.auth})
         self.assertEqual(200, status)
         self.assertIn(b"No posting", body)
 
@@ -87,13 +97,13 @@ class InboxTests(unittest.TestCase):
         status, body = self.request("POST", "/api/invoices", PDF, self.headers())
         self.assertEqual(201, status)
         doc = json.loads(body)["id"]
-        self.assertEqual(401, self.request("GET", "/invoice/" + doc)[0])
-        self.assertEqual((200, PDF), self.request("GET", "/invoice/" + doc, headers={"Authorization":self.auth}))
+        self.assertEqual(303, self.request("GET", "/invoice/" + doc)[0])
+        self.assertEqual((200, PDF), self.request("GET", "/invoice/" + doc, headers={"Cookie":self.auth}))
         self.assertEqual(409, self.request("POST", "/api/invoices", PDF, self.headers())[0])
 
     def test_05_no_path_lookup(self):
         self.assertEqual(404, self.request("GET", "/invoice/../something",
-                         headers={"Authorization":self.auth})[0])
+                         headers={"Cookie":self.auth})[0])
 
     def test_06_insecure_startup_refused(self):
         env = os.environ.copy()
@@ -108,23 +118,23 @@ class InboxTests(unittest.TestCase):
         code, body = self.request("POST", "/api/invoices", pdf, self.headers())
         self.assertEqual(201, code, body)
         doc = json.loads(body)["id"]
-        self.assertEqual(401, self.request("GET", "/review/" + doc)[0])
-        self.assertEqual(403, self.request("POST", "/api/reviews/"+doc, b"{}", {"Authorization":self.auth,"Content-Type":"application/json"})[0])
+        self.assertEqual(303, self.request("GET", "/review/" + doc)[0])
+        self.assertEqual(403, self.request("POST", "/api/reviews/"+doc, b"{}", {"Cookie":self.auth,"Content-Type":"application/json"})[0])
         fields = dict(supplier="Synthetic carrier", gstin="", invoice_number="TEST-7",
                       invoice_date="2026-10-20",currency="INR",subtotal="100.00",
                       cgst="9.00",sgst="9.00",igst="0",discount="0",total="118.00",notes="")
-        headers={"Authorization":self.auth,"Content-Type":"application/json","X-CSRF-Token":self.csrf}
+        headers={"Cookie":self.auth,"Content-Type":"application/json","X-CSRF-Token":self.csrf}
         code, body = self.request("POST", "/api/reviews/"+doc, json.dumps(fields).encode(), headers)
         self.assertEqual(200,code,body)
         self.assertEqual(False,json.loads(body)["pdf_verified"])
-        code, body = self.request("GET","/review/"+doc,headers={"Authorization":self.auth})
+        code, body = self.request("GET","/review/"+doc,headers={"Cookie":self.auth})
         self.assertEqual(200, code)
         self.assertIn(b'118.00',body)
         fields["total"]="119.00"
         code, body = self.request("POST","/api/reviews/"+doc,json.dumps(fields).encode(),headers)
         self.assertEqual(400,code)
         self.assertIn(b"don't add up",body)
-        code, body = self.request("GET","/review/"+doc,headers={"Authorization":self.auth})
+        code, body = self.request("GET","/review/"+doc,headers={"Cookie":self.auth})
         self.assertIn(b'118.00',body)
 
 
@@ -136,9 +146,9 @@ class InboxTests(unittest.TestCase):
         doc = json.loads(raw)["id"]
         self.assertEqual(401, self.request("POST", "/api/extract/"+doc)[0])
         self.assertEqual(403, self.request("POST", "/api/extract/"+doc,
-                         headers={"Authorization":self.auth})[0])
+                         headers={"Cookie":self.auth})[0])
         self.assertEqual(503, self.request("POST", "/api/extract/"+doc,
-                         headers={"Authorization":self.auth,"X-CSRF-Token":self.csrf})[0])
+                         headers={"Cookie":self.auth,"X-CSRF-Token":self.csrf})[0])
 
     def test_09_invoice_rejected_for_wrong_media_type(self):
         import http.client
@@ -148,17 +158,17 @@ class InboxTests(unittest.TestCase):
     def test_10_no_read_or_write_to_unknown_invoice(self):
         fake="a"*32
         self.assertEqual(404,self.request("GET","/review/"+fake,
-                         headers={"Authorization":self.auth})[0])
+                         headers={"Cookie":self.auth})[0])
         self.assertEqual(404,self.request("GET","/invoice/"+fake,
-                         headers={"Authorization":self.auth})[0])
-        h={"Authorization":self.auth,"Content-Type":"application/json","X-CSRF-Token":self.csrf}
+                         headers={"Cookie":self.auth})[0])
+        h={"Cookie":self.auth,"Content-Type":"application/json","X-CSRF-Token":self.csrf}
         self.assertEqual(400,self.request("POST","/api/reviews/"+fake,b"{}",h)[0])
 
     def test_11_unsupported_mutation_endpoints(self):
         self.assertEqual(404,self.request("POST","/api/zoho/post",b"",
-                    {"Authorization":self.auth})[0])
+                    {"Cookie":self.auth})[0])
         self.assertEqual(404,self.request("GET","/api/zoho/bills",
-                    headers={"Authorization":self.auth})[0])
+                    headers={"Cookie":self.auth})[0])
 
 if __name__ == "__main__":
     unittest.main()

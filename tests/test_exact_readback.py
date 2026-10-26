@@ -34,3 +34,38 @@ class ExactReadbackTests(unittest.TestCase):
         self.assertFalse(result['ok'])
         self.assertTrue(result['checks']['tax_total']['ok'])
         self.assertFalse(result['checks']['total']['ok'])
+
+    def test_offsetting_one_paisa_head_differences_fail_with_same_total(self):
+        bill=readback(approvable_invoice())
+        bill['taxes'][0]['tax_amount']+=.01
+        bill['taxes'][1]['tax_amount']-=.01
+        result=self.check_bill(bill)
+        self.assertFalse(result['ok'])
+        self.assertTrue(result['checks']['tax_total']['ok'])
+        self.assertTrue(result['checks']['total']['ok'])
+        self.assertFalse(result['checks']['tax_amount_cgst']['ok'])
+        self.assertFalse(result['checks']['tax_amount_sgst']['ok'])
+
+    def test_wrong_tax_head_fails_with_same_total(self):
+        bill=readback(approvable_invoice())
+        bill['taxes']=[{'tax_name':'IGST18 (18%)','tax_amount':bill['tax_total']}]
+        result=self.check_bill(bill)
+        self.assertFalse(result['ok'])
+        self.assertFalse(result['checks']['tax_amount_igst']['ok'])
+
+    def test_missing_tax_details_fail(self):
+        bill=readback(approvable_invoice());del bill['taxes']
+        self.assertFalse(self.check_bill(bill)['ok'])
+
+    def test_multiple_rates_sum_within_each_printed_head(self):
+        bill=readback(approvable_invoice())
+        bill['taxes']=[{'tax_name':head+rate,'tax_amount':amount}
+                       for head in ('CGST','SGST')
+                       for rate,amount in (('2.5 (2.5%)',7951.30),('9 (9%)',2719.39))]
+        self.assertTrue(self.check_bill(bill)['ok'])
+
+    def test_unknown_or_nonfinite_tax_details_fail(self):
+        for taxes in ([{'tax_name':'Unspecified','tax_amount':21341.38}],
+                      [{'tax_name':'CGST9','tax_amount':'NaN'}]):
+            bill=readback(approvable_invoice());bill['taxes']=taxes
+            self.assertFalse(self.check_bill(bill)['ok'])

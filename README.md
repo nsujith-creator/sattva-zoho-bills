@@ -21,7 +21,7 @@ Before a bill reaches the approval queue:
 - **An HSN/SAC code that isn't 4, 6 or 8 digits goes to review.** It is no longer dropped or cut to 8 digits.
 - **Overseas USD bills use the exchange rate for the invoice date.** If that rate can't be fetched, the bill goes to review. `--usd-rate` is a manual override; `--use-invoice-date-fx` is now the default and does nothing.
 
-Read-back requires the Zoho bill's currency, every line's amount and tax code, and `sub_total` to equal what was posted exactly. `tax_total` and `total` must equal the printed invoice exactly. Even a one-paisa difference remains `post_verify_failed` for review. For reverse-charge bills, `total` must equal the pre-tax payable, and each line's reverse-charge tax must equal 18%.
+Read-back requires the Zoho bill's currency, every line's amount and tax code, and `sub_total` to equal what was posted exactly. `tax_total`, `total`, and each forward-charge IGST/CGST/SGST head must equal the printed invoice exactly. Multiple rates are summed within each head; offsetting differences, wrong heads, or missing/unrecognized tax details fail verification. Even a one-paisa difference remains `post_verify_failed` for review. For reverse-charge bills, `total` must equal the pre-tax payable, and each line's reverse-charge tax must equal 18%.
 
 ## Starting the watcher
 

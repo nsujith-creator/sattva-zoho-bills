@@ -1964,6 +1964,15 @@ def match_vendor_tiered(parsed_name, vendors, vendor_gstin=None):
 
     canonical = _normalize_name(VENDOR_ALIAS_MAP.get(norm) or "")
     hint = str(vendor_gstin or "").strip().upper()
+    # Overseas suppliers may quote an India OIDAR registration beginning 99.
+    # It is not an Indian supplier GSTIN. Match by unique Zoho vendor name,
+    # without allowing a conflicting ordinary Indian GSTIN to fall back.
+    if hint and re.fullmatch(r"99[A-Z0-9]{13}", hint):
+        if norm in name_map:
+            return _unique(name_map[norm], "exact")
+        if canonical in name_map:
+            return _unique(name_map[canonical], "alias")
+        return None, None, "overseas_registration_name_unmatched", ""
     if hint:
         if not re.fullmatch(r"[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]", hint):
             return None, None, "invalid_gstin", ""

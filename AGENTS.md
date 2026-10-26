@@ -10,6 +10,10 @@ This workflow extracts, validates, deduplicates, and prepares vendor bills for Z
 
 Use the canonical Zoho Bills project memory or project-specific authoritative document when available. Do not silently override established field mappings, duplicate rules, approval boundaries, or accounting decisions with assumptions from code or old notes.
 
+## Owner-approved business-expense routing
+
+Any invoice billed to GSTIN 27AEFPN9399L1ZI belongs in Sattva's business-expense processing workflow, regardless of the personal name or billing contact displayed. Do not reject it as personal for that reason. The GSTIN must be evidenced on the source invoice, not inferred from the vendor's registration or an AI assertion. Business-expense intake does not imply automatic tax-credit eligibility or permission to post; preserve reconciliation, duplicate detection, reverse-charge treatment, and per-invoice human approval.
+
 ## Required constraints
 
 - Never auto-post a vendor bill solely because extraction completed.

@@ -48,4 +48,37 @@ class ExtractionContract(unittest.TestCase):
         with self.assertRaises(ExtractionError):
             request_anthropic(PDF,"synthetic.pdf","test",transport=lambda *a,**k:Broken())
 
+    def test_cma_bill_of_lading_is_withheld_without_inventing_invoice_number(self):
+        x=normalize_suggestions(local_invoice(invoice_number="AMC1234567"))
+        self.assertNotIn("invoice_number",x["fields"])
+        self.assertIn("AMC1234567", " ".join(x["issues"]))
+        self.assertIn("bill-of-lading", " ".join(x["issues"]))
+        self.assertFalse(x["source_verified"])
+
+    def test_same_prefix_for_other_supplier_is_not_rewritten(self):
+        x=normalize_suggestions(local_invoice(supplier="Synthetic local supplier",invoice_number="AMC1234567"))
+        self.assertEqual("AMC1234567",x["fields"]["invoice_number"])
+
+    def test_unknown_tax_and_credit_are_flagged_and_never_defaulted_to_zero(self):
+        x=normalize_suggestions(local_invoice(igst=None,discount=None))
+        self.assertNotIn("igst",x["fields"])
+        self.assertNotIn("discount",x["fields"])
+        self.assertIn("igst", " ".join(x["issues"]))
+        self.assertIn("discount", " ".join(x["issues"]))
+
+    def test_docker_copy_inputs_survive_context_filter(self):
+        import fnmatch
+        from pathlib import Path
+        root=Path(__file__).resolve().parent
+        patterns=(root/".dockerignore").read_text().splitlines()
+        copy=next(line for line in (root/"Dockerfile").read_text().splitlines() if line.startswith("COPY "))
+        for filename in copy.split()[1:-1]:
+            with self.subTest(filename=filename):
+                included=True
+                for rule in patterns:
+                    if fnmatch.fnmatchcase(filename,rule.lstrip("!")):
+                        included=rule.startswith("!")
+                self.assertTrue(included, filename+" is excluded from Docker context")
+                self.assertTrue((root/filename).is_file())
+
 if __name__=="__main__":unittest.main()

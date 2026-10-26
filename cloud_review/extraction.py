@@ -23,9 +23,12 @@ Return ONLY JSON with keys:
 Rules:
 - Preserve printed figures and invoice currency, without computing FX or inventing GST. Unknown fields must be null.
 - Tax fields are ONLY actual CGST, SGST and IGST printed on supplier invoice. Do not invent reverse-charge tax, ITC or tax eligibility. If a tax head is clearly absent, enter "0.00"; if uncertain, null.
+- On a complete INR invoice showing CGST and SGST only, absent IGST is "0.00". If no discount or credit is shown, discount is "0.00". Include every money key; leave null only where the document is genuinely unclear.
 - total is invoice GRAND TOTAL, not an outstanding balance adjusted for previous payments. Never calculate it yourself.
 - discount is a positive reduction. Flag credit notes and negative totals.
 - CMA CGM: use the invoice ID, NOT the Bill of Lading/MBL number. Meta: prefer Tax Invoice ID at top, not FBADS number below. Flag conflicting identifiers.
+- CMA CGM EXPORT INVOICE header has TWO different values on the same line: "Bill of Lading: AMC..." and, further to the right, the invoice number such as INEMHC.... Use the second value. Never return the AMC bill-of-lading reference as invoice_number. If the invoice number cannot be identified, return null and flag it.
+- Sattva buyer GSTIN 27AEFPN9399L1ZI is not a conflicting supplier GSTIN. An invoice billed to that GSTIN belongs to business-expense review even if a personal billing-contact name appears. This does not establish tax-credit eligibility or approval to post.
 - If multiple invoices or credit notes appear in one PDF, set multi_invoice true. Do not select only the largest.
 - Currency follows currency of invoice payable, not quoted USD references for INR invoices. Never fabricate rates.
 - All money amounts decimal strings with no symbols/separators, up to 2 fractional digits. Be explicit about uncertainty.
@@ -117,11 +120,17 @@ def normalize_suggestions(parsed):
                 issues.append("gstin: invalid format, omitted.")
                 continue
         fields[k]=value
+    supplier = fields.get("supplier", "").upper()
+    invoice_number = fields.get("invoice_number", "")
+    if ("CMA CGM" in supplier or "CCAI" in supplier) and re.fullmatch(r"AMC\d{7,}", invoice_number, re.I):
+        fields.pop("invoice_number")
+        issues.append("CMA CGM bill-of-lading reference " + invoice_number +
+                      " withheld as invoice number. Check the EXPORT INVOICE header.")
     if all(k in fields for k in (*MONEY,"currency")):
         sub,cgst,sgst,igst,disc,total=(Decimal(fields[k]) for k in MONEY)
         if abs(sub+cgst+sgst+igst-disc-total)>Decimal("0.01"):
             issues.append("Extracted components do not match printed total. Check PDF, credits and tax.")
-    missing=[k for k in ("supplier","invoice_number","invoice_date","currency","total") if k not in fields]
+    missing=[k for k in ("supplier","invoice_number","invoice_date","currency",*MONEY) if k not in fields]
     if missing: issues.append("Missing suggestions: "+", ".join(missing))
     return {"status":"suggestions_only","fields":fields,"issues":issues[:12],
             "source_verified":False,"posted_to_zoho":False,"provider":MODEL}

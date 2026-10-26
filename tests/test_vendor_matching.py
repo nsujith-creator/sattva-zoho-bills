@@ -136,6 +136,21 @@ def run_pipeline(parsed, existing=None, preview=False, post=None, loaded_vendors
 
 
 class VendorMatchingTests(unittest.TestCase):
+    def test_meta_two_invoice_number_forms_require_same_vendor_review(self):
+        """A Meta FBADS alternate number cannot bypass the duplicate gate."""
+        top, bottom = "ADS190-12345", "FBADS-190-12345"
+        self.assertEqual(zb._bill_key(top), zb._bill_key(bottom))
+        index = {zb._bill_key(bottom): [{
+            "bill_number": bottom, "vendor_id": "vendor-1", "bill_id": "one"}]}
+        self.assertEqual(zb.find_existing_bill(index, "vendor-1", top)[0], "variant")
+        self.assertEqual(zb.find_existing_bill(index, "vendor-1", bottom)[0], "exact")
+        self.assertIsNone(zb.find_existing_bill(index, "vendor-2", top)[0])
+
+    def test_bill_of_lading_charge_is_not_extracted_as_bl_number(self):
+        text = "BILL OF LADING  996759  1.000 / SHIPMENT\nBL Ref : VSLNSABND004026"
+        self.assertEqual(zb.extract_mbl_from_pdf_text(text), "VSLNSABND004026")
+        self.assertEqual(zb.extract_mbl_from_pdf_text("BILL OF LADING  996759  1.000 / SHIPMENT"), "")
+
     def test_fetch_keeps_same_name_registrations_across_pages(self):
         responses = [
             {"contacts": [{"contact_name": "MAERSK A/S", "contact_id": MAERSK_ID, "gst_no": GSTIN}],

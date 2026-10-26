@@ -136,6 +136,19 @@ def run_pipeline(parsed, existing=None, preview=False, post=None, loaded_vendors
 
 
 class VendorMatchingTests(unittest.TestCase):
+    def test_foreign_supplier_india_99_registration_uses_unique_name(self):
+        vendors = {"ANTHROPIC, PBC": {"id": "anthropic", "gst_no": ""}}
+        result = zb.match_vendor_tiered("Anthropic, PBC", vendors, "9924USA29003OSI")
+        self.assertEqual(result[:3], ("anthropic", "ANTHROPIC, PBC", "exact"))
+        vendors["ANTHROPIC, PBC"]["duplicates"] = [{"id": "other", "gst_no": ""}]
+        self.assertEqual(zb.match_vendor_tiered("Anthropic, PBC", vendors, "9924USA29003OSI")[2], "ambiguous")
+        self.assertEqual(zb.match_vendor_tiered("Unknown", vendors, "9924USA29003OSI")[2], "overseas_registration_name_unmatched")
+
+    def test_indian_supplier_gstin_conflict_still_blocked(self):
+        v = {"MAERSK A/S": {"id": "maersk", "gst_no": GSTIN}}
+        self.assertEqual(zb.match_vendor_tiered("MAERSK A/S", v, "27AAAAA0000A1Z0")[2], "gstin_unmatched")
+
+
     def test_meta_two_invoice_number_forms_require_same_vendor_review(self):
         """A Meta FBADS alternate number cannot bypass the duplicate gate."""
         top, bottom = "ADS190-12345", "FBADS-190-12345"

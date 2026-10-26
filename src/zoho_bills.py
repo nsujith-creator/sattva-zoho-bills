@@ -939,8 +939,8 @@ def extract_created_bill_id(result):
 
 
 # ── Zoho data fetch ───────────────────────────────────────────────────────────
-# Read-back may differ from the invoice only by paise rounding of computed tax,
-# at most this much per line (audit F02 replaced a max(Rs 1, 1%) tolerance).
+# Allowance for each computed reverse-charge line only. Printed invoice totals
+# have zero tolerance; differences require review.
 VERIFY_ROUNDING_PER_LINE = Decimal("0.01")
 
 
@@ -949,7 +949,7 @@ def verify_created_bill(bill_id, payload, parsed, run_id="unset", filename="", u
     Read the bill back and compare it with what was posted and what the invoice
     printed (audit F01/F02). Lines and sub_total must equal the payload exactly;
     total (and, for forward charge, tax_total) must equal the printed payable
-    within per-line paise rounding. A missing field fails the check.
+    exactly. A rounding difference requires review, not a verified result.
     """
     result = {"ok": False, "checks": {}, "errors": []}
     try:
@@ -1006,8 +1006,6 @@ def verify_created_bill(bill_id, payload, parsed, run_id="unset", filename="", u
         got_lines = bill.get("line_items", [])
         if not isinstance(got_lines, list):
             got_lines = []
-        rounding = VERIFY_ROUNDING_PER_LINE * max(len(sent_lines), 1)
-
         # Lines: Zoho must hold exactly what was posted.
         lines_ok = bool(sent_lines) and len(got_lines) == len(sent_lines)
         line_details = []
@@ -1067,8 +1065,8 @@ def verify_created_bill(bill_id, payload, parsed, run_id="unset", filename="", u
                     expected_total = money(expected_total * Decimal(str(usd_rate))) if usd_rate else None
         else:
             expected_total = printed_total
-            compare_amount("tax_total", printed_tax, money(bill.get("tax_total")), rounding)
-        compare_amount("total", expected_total, money(bill.get("total")), rounding)
+            compare_amount("tax_total", printed_tax, money(bill.get("tax_total")), Decimal("0.00"))
+        compare_amount("total", expected_total, money(bill.get("total")), Decimal("0.00"))
 
         result["ok"] = not result["errors"]
         detail = " ".join(result["errors"])[:300]
@@ -3035,9 +3033,11 @@ def _business_test():
                 assert any(e.startswith("sub_total_mismatch") for e in r["errors"])
 
         def t_verify_created_bill_paise_rounding_only():
-            # Two lines allow Rs 0.02 of computed-tax rounding, no more.
+            # Even a one-paisa difference from printed figures needs review.
+            r = run_verify_with_bill(verify_bill(tax_total=45.01, total=295.01))
+            assert r["ok"] is False
             r = run_verify_with_bill(verify_bill(tax_total=45.02, total=295.02))
-            assert r["ok"] is True, r["errors"]
+            assert r["ok"] is False
             r = run_verify_with_bill(verify_bill(tax_total=45.03, total=295.03))
             assert r["ok"] is False
             assert any(e.startswith("total_mismatch") for e in r["errors"])

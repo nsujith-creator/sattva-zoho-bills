@@ -742,6 +742,14 @@ def run_for_file(filename, run_id):
         if line.strip():
             log(f"  | {line}")
 
+    # A crashed child cannot borrow a prior attempt's status from saved logs.
+    # The watcher never passes --approve, so a failed invocation cannot post.
+    if proc.returncode != 0:
+        lines = output.splitlines()
+        errors = [line for line in lines if any(word in line.lower()
+                  for word in ("error", "failed", "exception"))]
+        return "error", errors[-1] if errors else output[-200:]
+
     # Parse run_log.json for this specific file's result
     run_log_path = r"C:\temp\zoho\run_log.json"
     if os.path.exists(run_log_path):
@@ -787,12 +795,6 @@ def run_for_file(filename, run_id):
                     return entry.get("status", "unknown"), entry.get("error", "")
         except Exception:
             pass
-
-    if proc.returncode != 0:
-        lines = output.splitlines()
-        err_lines = [l for l in lines if "error" in l.lower() or "failed" in l.lower() or "exception" in l.lower()]
-        detail = err_lines[-1] if err_lines else output[-200:]
-        return "error", detail
 
     return "unknown", "Could not determine result - check watcher.log"
 

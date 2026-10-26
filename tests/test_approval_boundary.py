@@ -41,7 +41,7 @@ def readback(parsed, **overrides):
     return bill
 
 
-def watcher_status(folder, run_log, filename, popen_calls=None):
+def watcher_status(folder, run_log, filename, popen_calls=None, returncode=0):
     """What watcher.run_for_file() reports, with its hardcoded paths redirected."""
     folder = Path(folder)
     run_log_file = folder / "watcher_run_log.json"
@@ -51,7 +51,8 @@ def watcher_status(folder, run_log, filename, popen_calls=None):
     real_open, real_exists = open, watcher.os.path.exists
 
     class FakeProc:
-        returncode = 0
+        def __init__(self):
+            self.returncode = returncode
 
         def communicate(self, timeout=None):
             return "", ""
@@ -70,6 +71,12 @@ def watcher_status(folder, run_log, filename, popen_calls=None):
 
 
 class ApprovalBoundaryTests(unittest.TestCase):
+    def test_crashed_child_does_not_reuse_stale_review_status(self):
+        with tempfile.TemporaryDirectory(prefix="zoho-watcher-crash-test-") as folder:
+            stale = {"needs_review": [{"file": "sample.pdf", "reason": "old_state"}]}
+            status = watcher_status(folder, stale, "sample.pdf", returncode=1)
+            self.assertEqual(status, "error")
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory(prefix="zoho-approval-test-")
         self.folder = Path(self._tmp.name)

@@ -1104,8 +1104,11 @@ def fetch_existing_bills():
 
 
 def _bill_key(bill_number):
-    """Bill number without case, spaces or punctuation, for duplicate lookup."""
-    return re.sub(r"[^A-Z0-9]", "", str(bill_number or "").upper())
+    """Normalise bill numbers, including two printed forms of Meta invoices."""
+    key = re.sub(r"[^A-Z0-9]", "", str(bill_number or "").upper())
+    # Meta prints ADS... (tax invoice ID) and FBADS... (bottom invoice no.).
+    # Alias only this recognised prefix; vendor ID is checked by the caller.
+    return key[2:] if key.startswith("FBADS") else key
 
 
 def fetch_existing_bill_index():
@@ -1203,7 +1206,8 @@ def fetch_vendors():
 
 # ── MBL Extraction ────────────────────────────────────────────────────────────
 MBL_PATTERNS = [
-    r"Bill\s+of\s+Lading\s*[:\|]?\s*([A-Z0-9]{6,})",
+    # Require a separator: a "BILL OF LADING" charge line is not a BL number.
+    r"Bill\s+of\s+Lading\s*[:\|]\s*([A-Z0-9]{6,})",
     r"Master\s+Number\s*[:\|]?\s*([A-Z0-9]{6,})",
     r"B/L\s*No\.?\s*[:\|]?\s*([A-Z0-9]{6,})",
     r"BL#\s+([A-Z0-9]{6,})",
@@ -1279,7 +1283,8 @@ def extract_text_from_pdf(filepath):
     try:
         result = subprocess.run(
             ["pdftotext", "-layout", filepath, "-"],
-            capture_output=True, text=True, timeout=30
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=30
         )
         if result.returncode == 0:
             return result.stdout.strip()

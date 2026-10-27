@@ -139,8 +139,41 @@ class OwnerHTTP(unittest.TestCase):
     def test_production_cookie_flags_and_plain_http_refusal(self):
         self.server.local_http=False;self.server.session_cookie='__Host-sattva_session';self.server.login_cookie='__Host-sattva_login'
         self.assertEqual(403,self.request('GET','/login')[0])
-        code,h,_=self.request('GET','/login',headers={'X-Forwarded-Proto':'https'})
+        code,h,_=self.request('GET','/login',headers={'X-Forwarded-Proto':'https','X-Real-IP':'192.0.2.10'})
         self.assertEqual(200,code);self.assertIn('; Secure',h['Set-Cookie']);self.assertIn('Strict-Transport-Security',h)
+
+    def proxy_login(self, get_peer='192.0.2.10', post_peer='192.0.2.10', password=PASSWORD):
+        self.server.local_http=False;self.server.session_cookie='__Host-sattva_session';self.server.login_cookie='__Host-sattva_login'
+        headers={'X-Forwarded-Proto':'https','X-Real-IP':get_peer}
+        code,h,page=self.request('GET','/login',headers=headers);self.assertEqual(200,code)
+        nonce=re.search(rb'name="csrf" value="([^"]+)"',page).group(1).decode()
+        entry=self.server.auth.forms[self.server.auth.key(nonce)]
+        self.assertEqual(get_peer,entry['peer'])
+        return self.request('POST','/login',urlencode({'csrf':nonce,'password':password}),{**headers,'X-Real-IP':post_peer,'Cookie':h['Set-Cookie'].split(';')[0],'Content-Type':'application/x-www-form-urlencoded'})
+
+    def test_production_nonce_uses_edge_client_instead_of_rotating_socket_peer(self):
+        self.assertEqual(303,self.proxy_login()[0])
+
+    def test_production_nonce_still_rejects_different_client(self):
+        self.assertEqual(400,self.proxy_login(post_peer='192.0.2.11')[0])
+
+    def test_production_proxy_address_is_required_and_must_be_one_ip(self):
+        self.server.local_http=False
+        for address in (None,'','unknown','192.0.2.10, 192.0.2.11','fe80::1%scope'):
+            with self.subTest(address=address):
+                headers={'X-Forwarded-Proto':'https'}
+                if address is not None:headers['X-Real-IP']=address
+                code,h,_=self.request('GET','/login',headers=headers)
+                self.assertEqual(400,code);self.assertNotIn('Set-Cookie',h)
+
+    def test_proxy_throttling_survives_new_connections(self):
+        for _ in range(5):self.assertEqual(401,self.proxy_login(password='wrong')[0])
+        self.assertEqual(429,self.proxy_login()[0])
+
+    def test_local_mode_ignores_forged_client_header(self):
+        code,h,page=self.request('GET','/login',headers={'X-Real-IP':'192.0.2.10'})
+        nonce=re.search(rb'name="csrf" value="([^"]+)"',page).group(1).decode()
+        self.assertEqual('127.0.0.1',self.server.auth.forms[self.server.auth.key(nonce)]['peer'])
 
 
 if __name__=='__main__':unittest.main()

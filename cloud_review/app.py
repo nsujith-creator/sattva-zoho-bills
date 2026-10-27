@@ -3,6 +3,7 @@ import base64
 import hashlib
 import hmac
 import html
+import ipaddress
 import json
 import os
 import secrets
@@ -195,8 +196,24 @@ class Handler(BaseHTTPRequestHandler):
     def auth_cookie(self, name, value, max_age):
         return name+'='+value+'; Path=/; HttpOnly; SameSite=Strict; Max-Age='+str(max_age)+('' if self.server.local_http else '; Secure')
 
+    def auth_peer(self):
+        if self.server.local_http:
+            return self.client_address[0]
+        # Production is served only through Railway's HTTPS edge. Its socket
+        # peers rotate, so bind nonces/throttles to its documented client IP.
+        values = self.headers.get_all('X-Real-IP', [])
+        if len(values) != 1:
+            raise ValueError('Missing or ambiguous proxy client address')
+        value = values[0].strip()
+        if '%' in value:
+            raise ValueError('Scoped proxy client addresses are unsupported')
+        return str(ipaddress.ip_address(value))
+
     def login_page(self, message='', code=200, destination='/'):
-        token = self.server.auth.form(self.client_address[0])
+        try: peer = self.auth_peer()
+        except ValueError:
+            self.err(400, 'Secure proxy client address unavailable. Please try again.');return
+        token = self.server.auth.form(peer)
         esc = lambda s:html.escape(s,quote=True)
         page = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · Sattva Bills</title><style>{CSS}
 main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%}}h1{{font-size:42px;line-height:1.08}}label{{display:block;font-size:14px;font-weight:650;margin:28px 0 8px}}input[type=password]{{width:100%;font:18px system-ui;padding:13px;border:1px solid #a6b6c8;border-radius:6px}}.sign-in{{width:100%;margin-top:18px}}.login-message{{font-size:14px;line-height:1.5;color:#a12727;min-height:25px}}.privacy{{color:var(--muted);font-size:13px;line-height:1.6;margin-top:26px}}</style></head><body>
@@ -218,7 +235,10 @@ main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%
         form=self.auth_form()
         if form is None:return
         nonce=cookie_value(self.headers.get('Cookie',''),self.server.login_cookie)
-        token,error=self.server.auth.login(nonce,form.get('csrf',''),form.get('password',''),self.client_address[0])
+        try: peer = self.auth_peer()
+        except ValueError:
+            self.err(400, 'Secure proxy client address unavailable. Please try again.');return
+        token,error=self.server.auth.login(nonce,form.get('csrf',''),form.get('password',''),peer)
         if error:
             message={'invalid':'That password did not match. Try again.','throttled':'Too many sign-in attempts. Please wait 15 minutes before trying again.','form_expired':'This sign-in page expired. Please try again.'}[error]
             self.login_page(message,429 if error=='throttled' else 400 if error=='form_expired' else 401,form.get('next','/'));return

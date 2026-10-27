@@ -2041,6 +2041,11 @@ def main():
     _configure_stdio()
     run_id = None
     args = sys.argv[1:]
+    allowed_options = {"--run-id", "--preview", "--usd-rate", "--use-invoice-date-fx",
+                       "--approve", "--approver", "--file"}
+    if any(arg.startswith("-") and arg not in allowed_options for arg in args):
+        print("Unrecognized command option. No invoices processed. Use --test for offline business checks.")
+        raise SystemExit(2)
     if "--run-id" in args:
         idx = args.index("--run-id")
         if idx + 1 < len(args):

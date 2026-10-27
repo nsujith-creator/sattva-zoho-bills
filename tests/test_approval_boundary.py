@@ -73,6 +73,18 @@ def watcher_status(folder, run_log, filename, popen_calls=None, returncode=0):
 
 
 class ApprovalBoundaryTests(unittest.TestCase):
+    def test_unknown_options_cannot_start_pipeline_or_authenticate(self):
+        for option in ('--test-business-rules', '--preveiw', '--typo=private-value'):
+            output=io.StringIO()
+            with patch.object(sys,'argv',['zoho_bills.py',option]), \
+                 patch.object(zb,'generate_run_id',side_effect=AssertionError('Pipeline must not start')), \
+                 patch.object(zb,'refresh_token') as authenticate, contextlib.redirect_stdout(output):
+                with self.assertRaises(SystemExit) as stopped:zb.main()
+            self.assertEqual(2,stopped.exception.code)
+            authenticate.assert_not_called()
+            self.assertIn('No invoices processed',output.getvalue())
+            self.assertNotIn('private-value',output.getvalue())
+
     def test_crashed_child_does_not_reuse_stale_review_status(self):
         with tempfile.TemporaryDirectory(prefix="zoho-watcher-crash-test-") as folder:
             stale = {"needs_review": [{"file": "sample.pdf", "reason": "old_state"}]}

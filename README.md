@@ -25,6 +25,8 @@ Read-back requires the Zoho bill's currency, every line's amount and tax code, a
 
 ## Starting the watcher
 
+Unrecognized pipeline options exit with code 2 before authentication, state writes or invoice processing. The offline business-check option is `--test`; unknown options cannot silently start a folder run.
+
 The watcher runs `C:\temp\zoho\test\run_tests.py` before it starts and exits if that fails. It fails unless all of these are in place:
 
 1. `tests/run_tests.py` from this repo is copied to `C:\temp\zoho\test\run_tests.py`.

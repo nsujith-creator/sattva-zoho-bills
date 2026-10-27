@@ -35,6 +35,8 @@ def readback(parsed, **overrides):
     bill = {"bill_id": BILL_ID, "bill_number": parsed["bill_number"], "vendor_id": MAERSK_ID,
             "date": parsed["bill_date"], "currency_code": "INR", "sub_total": parsed["subtotal"],
             "tax_total": round(tax, 2), "total": parsed["invoice_total"],
+            "taxes": [{"tax_name": head.upper(), "tax_amount": parsed["tax_amount_"+head]}
+                      for head in ("igst", "cgst", "sgst") if parsed["tax_amount_"+head]],
             "line_items": [{"rate": line["rate"], "quantity": line["quantity"], "tax_id": line["tax_id"]}
                            for line in payload["line_items"]]}
     bill.update(overrides)

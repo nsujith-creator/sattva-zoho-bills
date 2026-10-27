@@ -1066,6 +1066,29 @@ def verify_created_bill(bill_id, payload, parsed, run_id="unset", filename="", u
         else:
             expected_total = printed_total
             compare_amount("tax_total", printed_tax, money(bill.get("tax_total")), Decimal("0.00"))
+            # Equal aggregate tax can conceal offsetting differences or a wrong
+            # GST head. Reconcile each printed head independently of the total.
+            tax_heads = {head: Decimal("0.00") for head in ("igst", "cgst", "sgst")}
+            tax_details = bill.get("taxes")
+            details_ok = isinstance(tax_details, list)
+            for tax in tax_details if isinstance(tax_details, list) else []:
+                if not isinstance(tax, dict):
+                    details_ok = False
+                    continue
+                label = re.sub(r"[^A-Z]", "", str(tax.get("tax_name", "")).upper())
+                matches = [head for head in tax_heads if head.upper() in label]
+                amount = money(tax.get("tax_amount"))
+                if len(matches) != 1 or amount is None:
+                    details_ok = False
+                    continue
+                tax_heads[matches[0]] += amount
+            result["checks"]["tax_details"] = {"ok": details_ok}
+            if not details_ok:
+                result["errors"].append("tax_details_missing_or_unrecognized")
+            for head, actual in tax_heads.items():
+                field = "tax_amount_" + head
+                compare_amount(field, money(parsed.get(field)) or Decimal("0.00"),
+                               actual, Decimal("0.00"))
         compare_amount("total", expected_total, money(bill.get("total")), Decimal("0.00"))
 
         result["ok"] = not result["errors"]
@@ -2943,6 +2966,7 @@ def _business_test():
                 "currency_code": "INR",
                 "sub_total": 250,
                 "tax_total": 45,
+                "taxes": [{"tax_name": "IGST18 (18%)", "tax_amount": 45}],
                 "total": 295,
                 "line_items": [
                     {"rate": 100, "quantity": 2, "tax_id": "TAX_IGST18"},

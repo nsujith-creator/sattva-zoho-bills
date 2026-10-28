@@ -6,6 +6,7 @@ import html
 import ipaddress
 import json
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -19,6 +20,7 @@ from urllib.parse import parse_qs, quote
 from auth import OwnerSessions, cookie_value
 
 MAX_PDF = 12 * 1024 * 1024
+PAGE_SIZE = 100
 
 CSS = r'''
 :root { color-scheme:light; --ink:#112033; --muted:#5a6b7f; --line:#d9e0e8; --accent:#245ddc; --paper:#fff; --wash:#f3f6fa; }
@@ -44,6 +46,7 @@ h2 { font-size:21px; letter-spacing:-.03em; margin:0; }.count { color:var(--mute
 .invoice a { color:var(--ink); font-weight:650; text-decoration:underline; text-decoration-color:#bbc8d6; text-underline-offset:4px; overflow-wrap:anywhere; }
 .invoice .stamp { color:var(--muted); } .status { color:#43566b; font-size:12px; }
 .empty { padding:50px 0; color:var(--muted); font-size:14px; }
+.pagination { display:flex; flex-wrap:wrap; justify-content:space-between; gap:16px; align-items:center; margin-top:22px; font-size:13px; }.pagination a { color:var(--accent); padding:9px 0; }
 footer { border-top:1px solid var(--line); padding:25px 0; margin-top:60px; color:var(--muted); font-size:12px; line-height:1.5; }
 @media(max-width:640px){header{padding:17px 18px}.brand span{display:block;border:0;padding:0;margin:3px 0 0;font-size:12px}.upload{align-items:stretch;padding:20px}.upload button{width:100%}.grid-head{display:none}.invoice{grid-template-columns:minmax(0,1fr) auto;row-gap:9px}.invoice .status{grid-column:1 / -1;grid-row:2}.stamp{text-align:right} .lede{font-size:15px}}
 @media(prefers-reduced-motion:no-preference){button{transition:background .12s ease;}}
@@ -106,7 +109,14 @@ def init_db(db_path):
         db.execute('CREATE TABLE IF NOT EXISTS suggestions (invoice_id TEXT PRIMARY KEY REFERENCES invoices(id), payload_json TEXT NOT NULL, created_at TEXT NOT NULL)')
 
 
-def template(rows, csrf):
+def draft_revision(fields_json=None, saved_at=None):
+    if fields_json is None:
+        return '"new"'
+    return '"'+hashlib.sha256((fields_json+'\0'+saved_at).encode('utf-8')).hexdigest()+'"'
+
+
+def template(rows, csrf, total=None, page=1, pages=1):
+    total = len(rows) if total is None else total
     parts = []
     for doc_id, filename, when, review_saved in rows:
         safe_id = html.escape(doc_id, quote=True)
@@ -114,12 +124,15 @@ def template(rows, csrf):
         ts = html.escape(when[:16].replace('T', ' ') + ' UTC')
         parts.append(f'<div class="invoice"><a href="/review/{safe_id}">{display}</a><span class="stamp">{ts}</span><span class="status">{"Manual draft saved · Not verified" if review_saved else "Awaiting manual entry"}</span></div>')
     content = ''.join(parts) if parts else '<div class="empty">No invoices yet. Upload the first PDF to start the review inbox.</div>'
+    previous = f'<a href="/?page={page-1}" rel="prev">Previous page</a>' if page > 1 else '<span></span>'
+    following = f'<a href="/?page={page+1}" rel="next">Next page</a>' if page < pages else '<span></span>'
+    pagination = (f'<nav class="pagination" aria-label="Invoice pages">{previous}<span>Page {page} of {pages}</span>{following}</nav>' if pages > 1 else '')
     return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf-token" content="{html.escape(csrf, quote=True)}"><title>Sattva · Bills Review</title><style>{CSS}</style></head><body>
 <header><div class="brand">SATTVA <span>Bills review</span></div><div class="mode">Private preview · No posting</div></header>
 <main><div class="eyebrow">INVOICE CONTROL</div><h1>Every bill,<br>accounted for.</h1>
 <p class="lede">A private place for incoming supplier invoices. Upload a PDF, open the original and review it before any accounting action.</p>
 <div class="upload"><div><strong>Add a supplier invoice</strong><div class="hint">PDF only · Maximum 12 MB · Stored privately on the server</div></div><div><input id="pdf" type="file" accept=".pdf,application/pdf" aria-label="Select PDF invoice"><button id="upload-btn" type="button">Choose PDF</button></div></div><div id="message" role="status" aria-live="polite"></div>
-<section><div class="section-head"><h2>Review inbox</h2><span class="count">{len(rows)} invoice{'s' if len(rows) != 1 else ''}</span></div><div class="grid-head"><span>Original PDF</span><span>Received (UTC)</span><span>Status</span></div>{content}</section>
+<section><div class="section-head"><h2>Review inbox</h2><span class="count">{total} invoice{'s' if total != 1 else ''}</span></div><div class="grid-head"><span>Original PDF</span><span>Received (UTC)</span><span>Status</span></div>{content}{pagination}</section>
 <footer>Review-only prototype. No AI extraction, payment functionality, Zoho authentication or bill-posting endpoints are included. Uploads must remain on a persistent private cloud volume before real invoices are used.</footer></main><script>{JS}</script></body></html>'''
 
 
@@ -271,20 +284,31 @@ main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%
         if not self.guard():
             return
         if path == '/':
+            try:
+                values = parse_qs(urlsplit(self.path).query, keep_blank_values=True, max_num_fields=8).get('page', ['1'])
+                if len(values) != 1 or not re.fullmatch(r'[1-9][0-9]{0,6}', values[0]):
+                    raise ValueError
+                page = int(values[0])
+            except ValueError:
+                self.err(400, 'Choose a valid invoice page.')
+                return
             with connect(self.server.db_path) as db:
-                rows = db.execute('SELECT i.id, i.filename, i.created_at, r.invoice_id IS NOT NULL FROM invoices i LEFT JOIN reviews r ON r.invoice_id=i.id ORDER BY i.created_at DESC, i.id DESC LIMIT 500').fetchall()
-            self.reply(200, template(rows, self.session['csrf']).encode(), 'text/html; charset=utf-8')
+                total = db.execute('SELECT COUNT(*) FROM invoices').fetchone()[0]
+                pages = max(1, (total+PAGE_SIZE-1)//PAGE_SIZE)
+                page = min(page, pages)
+                rows = db.execute('SELECT i.id, i.filename, i.created_at, r.invoice_id IS NOT NULL FROM invoices i LEFT JOIN reviews r ON r.invoice_id=i.id ORDER BY i.created_at DESC, i.id DESC LIMIT ? OFFSET ?', (PAGE_SIZE, (page-1)*PAGE_SIZE)).fetchall()
+            self.reply(200, template(rows, self.session['csrf'], total, page, pages).encode(), 'text/html; charset=utf-8')
         elif path.startswith('/review/'):
             doc_id = path.removeprefix('/review/')
             if len(doc_id) != 32 or any(ch not in '0123456789abcdef' for ch in doc_id):
                 self.err(404, 'Invoice not found')
                 return
             with connect(self.server.db_path) as db:
-                row = db.execute('SELECT i.filename, r.fields_json, s.payload_json FROM invoices i LEFT JOIN reviews r ON r.invoice_id=i.id LEFT JOIN suggestions s ON s.invoice_id=i.id WHERE i.id=?', (doc_id,)).fetchone()
+                row = db.execute('SELECT i.filename, r.fields_json, s.payload_json, r.saved_at FROM invoices i LEFT JOIN reviews r ON r.invoice_id=i.id LEFT JOIN suggestions s ON s.invoice_id=i.id WHERE i.id=?', (doc_id,)).fetchone()
             if not row:
                 self.err(404, 'Invoice not found')
                 return
-            self.reply(200, render(doc_id, row[0], json.loads(row[1]) if row[1] else None, self.session['csrf'], json.loads(row[2]) if row[2] else None, configured()).encode(), 'text/html; charset=utf-8')
+            self.reply(200, render(doc_id, row[0], json.loads(row[1]) if row[1] else None, self.session['csrf'], json.loads(row[2]) if row[2] else None, configured(), draft_revision(row[1], row[3])).encode(), 'text/html; charset=utf-8')
         elif path.startswith('/invoice/'):
             doc_id = path.removeprefix('/invoice/')
             if len(doc_id) != 32 or any(ch not in '0123456789abcdef' for ch in doc_id):
@@ -362,14 +386,37 @@ main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%
         except (ValueError, UnicodeError) as e:
             self.err(400, str(e) if isinstance(e, DraftError) else 'Invalid review fields.')
             return
+        revisions = self.headers.get_all('If-Match', [])
+        if not revisions:
+            self.err(428, 'Open the saved draft before saving changes.')
+            return
+        if len(revisions) != 1 or not re.fullmatch(r'"(?:new|[0-9a-f]{64})"', revisions[0]):
+            self.err(400, 'Invalid draft version. Open the saved draft and compare your entries.')
+            return
+        fields_json = json.dumps(fields, ensure_ascii=False)
+        saved_at = datetime.now(timezone.utc).isoformat()
+        conflict = 'This draft changed in another tab or device. Your entries are still on this page. Open the saved draft in a new tab and compare before saving again.'
         with connect(self.server.db_path) as db:
             if not db.execute('SELECT 1 FROM invoices WHERE id=?', (doc_id,)).fetchone():
                 self.err(404, 'Invoice not found')
                 return
-            db.execute('INSERT INTO reviews(invoice_id,fields_json,saved_at) VALUES (?,?,?) '
-                       'ON CONFLICT(invoice_id) DO UPDATE SET fields_json=excluded.fields_json,saved_at=excluded.saved_at',
-                       (doc_id, json.dumps(fields, ensure_ascii=False), datetime.now(timezone.utc).isoformat()))
-        self.reply(200, b'{"status":"manual_draft_saved","pdf_verified":false,"posted_to_zoho":false}', 'application/json; charset=utf-8')
+            current = db.execute('SELECT fields_json,saved_at FROM reviews WHERE invoice_id=?', (doc_id,)).fetchone()
+            if not hmac.compare_digest(revisions[0], draft_revision(*current) if current else draft_revision()):
+                self.err(409, conflict)
+                return
+            # The saved values are the compare-and-swap condition, so a concurrent
+            # save between the SELECT and this write cannot overwrite newer work.
+            if current:
+                changed = db.execute('UPDATE reviews SET fields_json=?,saved_at=? WHERE invoice_id=? AND fields_json=? AND saved_at=?',
+                    (fields_json, saved_at, doc_id, *current)).rowcount
+            else:
+                changed = db.execute('INSERT OR IGNORE INTO reviews(invoice_id,fields_json,saved_at) VALUES (?,?,?)',
+                    (doc_id, fields_json, saved_at)).rowcount
+            if changed != 1:
+                self.err(409, conflict)
+                return
+        self.reply(200, json.dumps({'status':'manual_draft_saved', 'pdf_verified':False,
+                   'posted_to_zoho':False, 'revision':draft_revision(fields_json, saved_at)}).encode(), 'application/json; charset=utf-8')
 
     def do_POST(self):
         if not self.server.local_http and self.headers.get('X-Forwarded-Proto','').lower() != 'https':

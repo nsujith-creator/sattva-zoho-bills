@@ -32,6 +32,8 @@ On Windows, supply environment variables using the platform shell. This loopback
 
 After upload, select an invoice in the inbox. A draft form captures supplier, GSTIN, invoice number/date, invoice currency, subtotal, CGST, SGST, IGST, discount/credit, printed payable and notes. Save preserves exact decimal amounts in a separate SQLite table. It checks only the typed arithmetic, rejects mismatches and unsafe input, and preserves the earlier valid draft when an edit fails. Status explicitly says **manual draft saved, NOT source verified**. The original PDF is available separately.
 
+The inbox shows the complete invoice count and 100 records per page, including access to the oldest originals. Draft saves carry the version loaded by that page. A stale or simultaneous save returns a conflict without overwriting newer work, keeps the typed entries visible and offers the saved draft in a separate tab for comparison. Successful saves advance the page's version. API clients must supply the quoted draft revision in `If-Match`; missing versions return 428 and stale versions return 409. The revision uses the existing saved fields and timestamp, so this safeguard requires no database schema change.
+
 No extraction, source-PDF parity, purchase bill approval, tax eligibility judgment, Zoho GET/POST, or financial posting is present. This is strictly an internal review prototype; do not deploy for real invoices until production authentication, backups, private volumes and access policies have been verified.
 
 ## Draft AI extraction (opt-in, unverified)

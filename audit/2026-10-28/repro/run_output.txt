@@ -1,0 +1,64 @@
+test_A_upload_enqueue_blocks_while_worker_holds_lock (__main__.Findings.test_A_upload_enqueue_blocks_while_worker_holds_lock) ... 
+[A] enqueue of a second upload waited 5.82s behind one job
+ok
+test_B_transient_readback_failure_after_create_is_terminal_and_unattached (__main__.Findings.test_B_transient_readback_failure_after_create_is_terminal_and_unattached) ... 
+[B] after one transient GET failure: status=needs_review posts=1 attachments=0 msg='Zoho read-back differs: exception:Hold: Provider connection or response failed. No automatic retry.'
+ok
+test_C_definitive_zoho_rejection_is_reported_as_uncertain (__main__.Findings.test_C_definitive_zoho_rejection_is_reported_as_uncertain) ... 
+[C] Zoho 400 rejection shown as: needs_review — 'Previous creation outcome is uncertain. No second bill was created.'
+ok
+test_D_two_agreeing_wrong_readings_post_and_verify (__main__.Findings.test_D_two_agreeing_wrong_readings_post_and_verify) ... 
+[D] consistent misread posted as SYNTHETIC-00I 2026-10-23: status=verified
+ok
+test_E_vendor_name_disagreement_not_in_signature (__main__.Findings.test_E_vendor_name_disagreement_not_in_signature) ... ok
+test_F_missing_printed_supplier_gstin_posts_with_master_registration (__main__.Findings.test_F_missing_printed_supplier_gstin_posts_with_master_registration) ... 
+[F] blank printed supplier GSTIN: status=verified (route from master GSTIN)
+ok
+test_G_same_number_different_financials_marked_duplicate_without_reconciling (__main__.Findings.test_G_same_number_different_financials_marked_duplicate_without_reconciling) ... 
+[G] existing bill with other date/total: status=duplicate msg='Already exists in Zoho; no duplicate was created.'
+ok
+test_H_zero_rated_line_and_round_off_are_held (__main__.Findings.test_H_zero_rated_line_and_round_off_are_held) ... 
+[H] zero-rated line: Invoice line or tax mapping needs review: line_tax_percentage_unsupported
+[H] printed round-off: Printed GST components and invoice total differ.
+ok
+test_I_worker_thread_dies_silently_on_unexpected_error (__main__.Findings.test_I_worker_thread_dies_silently_on_unexpected_error) ... Exception in thread cloud-bill-worker:
+Traceback (most recent call last):
+  File "/usr/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<scratch>/pr24/cloud_review/automation.py", line 582, in run
+    self.recover_uploads()
+    ~~~~~~~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3.13/unittest/mock.py", line 1169, in __call__
+    return self._mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.13/unittest/mock.py", line 1173, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.13/unittest/mock.py", line 1234, in _execute_mock_call
+    raise effect
+OSError: No space left on device
+
+[I] worker alive after OSError in intent scan: False
+ok
+test_J_interrupted_parse_is_terminal_and_same_pdf_cannot_be_resubmitted (__main__.Findings.test_J_interrupted_parse_is_terminal_and_same_pdf_cannot_be_resubmitted) ... 
+[J] interrupted parse -> needs_review; identical re-upload rejected by UNIQUE(sha256)
+ok
+test_K_validated_jobs_never_post_after_posting_is_enabled (__main__.Findings.test_K_validated_jobs_never_post_after_posting_is_enabled) ... ok
+test_L_line_level_tax_shape_required_for_every_domestic_post (__main__.Findings.test_L_line_level_tax_shape_required_for_every_domestic_post) ... 
+[L] created bill without line_item_taxes: needs_review errors=['line_gst_details_missing'] attachments=0
+ok
+test_M_meta_alias_not_found_by_cloud_duplicate_lookup (__main__.RealZohoClient.test_M_meta_alias_not_found_by_cloud_duplicate_lookup) ... 
+[M] cloud find -> None; core keys equal: True
+ok
+test_N_budget_capacity (__main__.RealZohoClient.test_N_budget_capacity) ... 
+[N] input tokens -> (USD reserved per invoice, invoices within 0.50, within hard max 1.00): {3000: (0.0675, 7, 14), 6000: (0.075, 6, 13), 12000: (0.09, 5, 11), 25000: (0.1225, 4, 8)}
+ok
+
+----------------------------------------------------------------------
+Ran 14 tests in 7.874s
+
+OK

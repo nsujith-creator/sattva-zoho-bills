@@ -16,6 +16,10 @@ Any invoice billed to GSTIN 27AEFPN9399L1ZI belongs in Sattva's business-expense
 
 ## Required constraints
 
+### Owner-authorized cloud automatic processing, 28 October 2026
+
+The owner explicitly instructed: cloud browser upload → Haiku parsing → automatic Zoho posting, with no manual re-entry or laptop step. For that cloud journey, this later instruction authorizes conditional automatic creation after source checks, exact vendor registration, arithmetic/tax validation, duplicate checks and durable source/payload journaling. It supersedes the per-invoice approval requirement for qualifying new cloud uploads only. It does not authorize bulk historical processing, existing-bill edits, vendor-master changes, invented FX or tax decisions, payments, or exceeding the existing spending ceiling. Extraction alone never authorizes posting. Failed or ambiguous checks hold the invoice with its reason. Completion requires exact Zoho read-back and original-PDF verification. The Windows workflow retains its existing approval behavior.
+
 - Never auto-post a vendor bill solely because extraction completed.
 - Preserve duplicate detection and idempotency.
 - Reconcile invoice number, vendor, date, taxable amount, tax components, total, currency, and source document.

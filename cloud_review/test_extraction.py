@@ -69,10 +69,10 @@ class ExtractionContract(unittest.TestCase):
     def test_docker_copy_inputs_survive_context_filter(self):
         import fnmatch
         from pathlib import Path
-        root=Path(__file__).resolve().parent
+        root=Path(__file__).resolve().parents[1]
         patterns=(root/".dockerignore").read_text().splitlines()
-        copy=next(line for line in (root/"Dockerfile").read_text().splitlines() if line.startswith("COPY "))
-        for filename in copy.split()[1:-1]:
+        copies=[line for line in (root/"cloud_review"/"Dockerfile").read_text().splitlines() if line.startswith("COPY ")]
+        for filename in [name for line in copies for name in line.split()[1:-1]]:
             with self.subTest(filename=filename):
                 included=True
                 for rule in patterns:
@@ -80,5 +80,10 @@ class ExtractionContract(unittest.TestCase):
                         included=rule.startswith("!")
                 self.assertTrue(included, filename+" is excluded from Docker context")
                 self.assertTrue((root/filename).is_file())
+        for filename in ('config.json','.env','parsed_cache.json','cloud_review/config.json','src/config.json'):
+            included=True
+            for rule in patterns:
+                if fnmatch.fnmatchcase(filename,rule.lstrip('!')):included=rule.startswith('!')
+            self.assertFalse(included,filename+' must not enter the image context')
 
 if __name__=="__main__":unittest.main()

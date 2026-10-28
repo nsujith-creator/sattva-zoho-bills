@@ -499,6 +499,11 @@ main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%
         try:
             with connect(self.server.db_path) as db:
                 db.execute('INSERT INTO invoices VALUES (?, ?, ?, ?, ?)', (doc_id, filename, digest, datetime.now(timezone.utc).isoformat(), data))
+                if self.server.automation:
+                    from automation import POLICY
+                    intent = {'kind':'automatic_upload_intent','policy':POLICY,'id':doc_id,'pdf_sha256':digest}
+                    db.execute('INSERT INTO suggestions(invoice_id,payload_json,created_at) VALUES(?,?,?)',
+                        (doc_id,json.dumps(intent),datetime.now(timezone.utc).isoformat()))
         except sqlite3.IntegrityError:
             self.err(409, 'This exact PDF was already uploaded. Check the inbox.')
             return

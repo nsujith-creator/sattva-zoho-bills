@@ -55,10 +55,21 @@ class UploadJourney(unittest.TestCase):
                 csrf=re.search(r'name="csrf-token" content="([^"]+)"',body.decode()).group(1)
                 self.assertIn(b'Drop a vendor bill here',body)
                 upload_headers={'Cookie':cookie,'X-CSRF-Token':csrf,'Content-Type':'application/pdf','X-Filename':'synthetic.pdf'}
-                status,_,body=request('POST','/api/invoices',PDF,upload_headers)
-                self.assertEqual(201,status)
-                doc_id=json.loads(body)['id']
-                self.assertEqual('queued',json.loads(body)['status'])
+                # Crash window: original+intent commit, but enqueue does not run.
+                engine.close()
+                with patch.object(engine,'enqueue',side_effect=OSError('simulated interruption after upload commit')):
+                    status,_,body=request('POST','/api/invoices',PDF,upload_headers)
+                self.assertEqual(503,status)
+                import sqlite3
+                with sqlite3.connect(db) as connection:
+                    doc_id=connection.execute('SELECT id FROM invoices').fetchone()[0]
+                connection.close()
+                self.assertIsNone(engine.read(doc_id))
+                engine=a.Engine(db,core_fixture(),ai,zoho)
+                server.automation=engine
+                engine.recover_uploads()
+                self.assertEqual('queued',engine.read(doc_id)['status'])
+                engine.start()
                 for _ in range(60):
                     status,_,body=request('GET','/review/'+doc_id,headers={'Cookie':cookie})
                     if b'Posted to Zoho.' in body:break
@@ -67,10 +78,14 @@ class UploadJourney(unittest.TestCase):
                 self.assertIn(b'Posted to Zoho.',body)
                 self.assertIn(b'Open Zoho bill',body)
                 self.assertNotIn(b'Enter the invoice details',body)
+                self.assertIn(b'pageshow',body)
                 self.assertEqual((2,1,1),(ai.calls,zoho.posts,zoho.attachments))
                 self.assertEqual(409,request('POST','/api/invoices',PDF,upload_headers)[0])
                 self.assertEqual(303,request('GET','/review/'+doc_id)[0])
                 self.assertEqual((2,1,1),(ai.calls,zoho.posts,zoho.attachments))
+                self.assertEqual(303,request('POST','/logout',urlencode({'csrf':csrf}),
+                    {'Cookie':cookie,'Content-Type':'application/x-www-form-urlencoded'})[0])
+                self.assertEqual(303,request('GET','/review/'+doc_id,headers={'Cookie':cookie})[0])
             finally:
                 server.shutdown();server.server_close();thread.join(timeout=3)
         gc.collect();folder.cleanup()

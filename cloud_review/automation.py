@@ -30,7 +30,8 @@ SCHEMA = '''{"vendor_name":"printed supplier name","vendor_gstin":"printed suppl
 "buyer_gstin":"printed buyer GSTIN or empty","bill_number":"printed invoice number",
 "bill_date":"YYYY-MM-DD","due_date":null,"currency_code":"INR","is_overseas":false,
 "line_items":[{"description":"exact printed charge description","quantity":1,"rate":"printed taxable line TOTAL, after quantity",
-"hsn_or_sac":"printed code or empty","tax_percentage":"printed TOTAL GST percentage"}],
+"hsn_or_sac":"printed code or empty","tax_percentage":"printed TOTAL GST percentage",
+"cgst":null,"sgst":null,"igst":null}],
 "subtotal":"printed taxable subtotal","discounts_or_credits":"0.00",
 "tax_amount_cgst":"0.00","tax_amount_sgst":"0.00","tax_amount_igst":"0.00",
 "invoice_total":"printed grand total","mbl_number":"printed BL reference or empty",
@@ -42,6 +43,7 @@ GSTIN of buyer Sattva Global Logistics is 27AEFPN9399L1ZI even when a personal b
 Do not confuse the supplier GSTIN with the buyer. Preserve the actual Indian billing-agent registration.
 Extract every charge separately in document order; rate is the printed taxable line total, quantity is 1.
 Read actual line GST percentages, including mixed rates. Never infer GST from charge descriptions.
+Line cgst/sgst/igst are amounts only when printed for that charge, otherwise null. Do not allocate header tax to lines.
 Grand total is the invoice total, not balance due after earlier payments. Do not calculate FX.
 For CMA CGM EXPORT INVOICE, Bill of Lading AMC... and invoice INEMHC... are separate fields on the same row.
 Use the invoice identifier, never the BL. For Meta use the Tax Invoice ID, not FBADS payment reference.
@@ -82,6 +84,16 @@ def atomic(path, value):
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
+    sync_directory(path.parent)
+
+
+def sync_directory(folder):
+    if os.name == 'posix':
+        descriptor = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
 
 def load_core():
@@ -92,6 +104,18 @@ def load_core():
     core = importlib.util.module_from_spec(spec)
     with contextlib.redirect_stdout(io.StringIO()):
         spec.loader.exec_module(core)
+    if enabled():
+        try:
+            rules = json.loads(os.environ['ZOHO_TAX_RULES_JSON'])
+            vendors = json.loads(os.environ['ZOHO_VENDOR_RULES_JSON'])
+            if not isinstance(rules['tax_id_map'], dict) or not isinstance(rules['igst_vendors'], list) or not isinstance(rules['overseas_vendor_signals'], list) or not isinstance(vendors['vendor_alias_map'], dict):
+                raise ValueError
+            core._TAX_ID_MAP = rules['tax_id_map']
+            core.IGST_VENDORS = rules['igst_vendors']
+            core._OVERSEAS_VENDOR_SIGNALS = set(rules['overseas_vendor_signals'])
+            core.VENDOR_ALIAS_MAP = vendors['vendor_alias_map']
+        except (KeyError, ValueError, TypeError) as exc:
+            raise Hold('Existing tax/vendor rules have not been transferred correctly.') from exc
     return core
 
 
@@ -297,6 +321,15 @@ def validate(parsed, core, vendors, check_zoho_rounding=True):
     check = core.reconcile_payload_taxes(parsed, payload, route)
     if not check['ok']:
         raise Hold('Printed tax and proposed lines differ: '+'; '.join(check['errors']))
+    for line in lines:
+        base, rate = amount(line['rate']), Decimal(str(line['tax_percentage']))
+        for field in ('cgst','sgst','igst'):
+            if line.get(field) is not None:
+                charged = (not route['is_overseas']) and ((field=='igst') == (route['tax_mode']=='igst'))
+                divisor = 100 if field=='igst' else 200
+                expected = (base*rate/divisor).quantize(Decimal('.01'),rounding=ROUND_HALF_UP) if charged else Decimal(0)
+                if amount(line[field]) != expected:
+                    raise Hold('Printed line '+field.upper()+' does not match its taxable amount and rate.')
     if route['is_overseas'] or not check_zoho_rounding:
         return payload
     # Zoho can round once per tax group. Detect disagreements BEFORE creating a bill.
@@ -319,7 +352,8 @@ def source_signature(parsed):
         values[key] = str(amount(values[key]))
     values['line_items'] = [(str(amount(x.get('rate'))), str(amount(x.get('quantity'))),
                             str(amount(x.get('tax_percentage'))), str(x.get('hsn_or_sac') or ''),
-                            ' '.join(str(x.get('description') or '').upper().split()))
+                            ' '.join(str(x.get('description') or '').upper().split()),
+                            tuple(str(amount(x[k])) if x.get(k) is not None else None for k in ('cgst','sgst','igst')))
                            for x in parsed.get('line_items', [])]
     return values
 
@@ -330,6 +364,8 @@ class Engine:
         self.folder = self.db_path.parent/'automation'
         first = not self.folder.exists()
         self.folder.mkdir(mode=0o700, exist_ok=True)
+        if first:
+            sync_directory(self.folder.parent)
         self.core, self.ai, self.zoho = core, ai or Haiku(self.folder), zoho
         self.lock = threading.Lock()
         self.state_lock = threading.RLock()
@@ -352,6 +388,7 @@ class Engine:
             with open(self.folder/'ai-budget.json', 'x', encoding='utf8') as f:
                 json.dump({'reserved_usd': '0', 'calls_reserved': 0}, f)
                 f.flush(); os.fsync(f.fileno())
+            sync_directory(self.folder)
         # An existing folder with absent/corrupt budget is NEVER reset to zero.
 
     def job_path(self, doc_id):
@@ -385,6 +422,19 @@ class Engine:
             atomic(self.job_path(doc_id), {'id': doc_id, 'status': 'queued', 'policy': POLICY,
                                           'message': 'Waiting to parse the original PDF.'})
 
+    def recover_uploads(self):
+        # Intent and original were committed together. Ignore all review-only uploads.
+        with contextlib.closing(sqlite3.connect(self.db_path)) as db:
+            rows = db.execute('SELECT i.id,i.sha256,s.payload_json FROM invoices i JOIN suggestions s ON s.invoice_id=i.id').fetchall()
+        for doc_id, digest, raw in rows:
+            try:
+                intent = json.loads(raw)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(intent, dict) and intent.get('kind') == 'automatic_upload_intent' and intent.get('policy') == POLICY and intent.get('pdf_sha256') == digest and intent.get('id') == doc_id:
+                if self.read(doc_id) is None:
+                    self.enqueue(doc_id)
+
     def process(self, doc_id):
         with self.lock:
             job = self.read(doc_id)
@@ -406,10 +456,14 @@ class Engine:
                     parsed = self.ai.extract(row[2])
                     self.save(job, 'checking_source', parsed=parsed, message='Checking printed fields against a second source reading.')
                     second = self.ai.extract(row[2], second=True)
+                    self.save(job, 'checking_source', source_check=second)
                     if second.get('confidence') != 'high' or second.get('issues') not in ([], '', None) or second.get('multi_invoice_count') != 1 or source_signature(parsed) != source_signature(second):
                         raise Hold('The two readings disagree; no bill was posted.')
                     self.save(job, 'validating', source_check=second, message='Matching the supplier and checking invoice totals.')
                 parsed = job['parsed']
+                second = job.get('source_check')
+                if not isinstance(second, dict) or second.get('confidence') != 'high' or second.get('issues') not in ([], '', None) or second.get('multi_invoice_count') != 1 or source_signature(parsed) != source_signature(second):
+                    raise Hold('Completed matching source checks are not retained. Nothing posted.')
                 contacts = zoho.all('contacts', 'contacts', {'contact_type': 'vendor', 'filter_by': 'Status.Active'})
                 vendors = {}
                 for c in contacts:
@@ -472,10 +526,34 @@ class Engine:
                         check['errors'].append(field+'_mismatch')
                 if parsed.get('vendor_gstin') and detail.get('gst_no') != parsed['vendor_gstin']:
                     check['errors'].append('supplier_registration_mismatch')
-                for sent, saved in zip(payload['line_items'], detail.get('line_items', [])):
+                if len(detail.get('line_items', [])) != len(payload['line_items']):
+                    check['errors'].append('line_count_mismatch')
+                for sent, saved, source in zip(payload['line_items'], detail.get('line_items', []), parsed['line_items']):
+                    for field in ('rate','quantity'):
+                        if Decimal(str(saved.get(field))) != Decimal(str(sent[field])):
+                            check['errors'].append('line_'+field+'_mismatch')
                     for field in ('description','account_id','hsn_or_sac'):
                         if field in sent and str(saved.get(field) or '') != str(sent[field]):
                             check['errors'].append('line_'+field+'_mismatch')
+                    if not payload.get('is_reverse_charge_applied'):
+                        heads = {'cgst':Decimal(0),'sgst':Decimal(0),'igst':Decimal(0)}
+                        taxes = saved.get('line_item_taxes')
+                        if not isinstance(taxes,list):
+                            check['errors'].append('line_gst_details_missing')
+                        else:
+                            for tax in taxes:
+                                head = [k for k in heads if k.upper() in str(tax.get('tax_name','')).upper()]
+                                if len(head)!=1:
+                                    check['errors'].append('line_gst_head_unrecognized')
+                                else:
+                                    heads[head[0]] += amount(tax.get('tax_amount'))
+                            mode = core.determine_tax_route(parsed,parsed['vendor_name'],parsed.get('vendor_gstin'))['tax_mode']
+                            for head, actual in heads.items():
+                                charged = (head=='igst') == (mode=='igst')
+                                divisor = 100 if head=='igst' else 200
+                                expected = (amount(sent['rate'])*Decimal(str(source['tax_percentage']))/divisor).quantize(Decimal('.01'),rounding=ROUND_HALF_UP) if charged else Decimal(0)
+                                if actual!=expected or (source.get(head) is not None and actual!=amount(source[head])):
+                                    check['errors'].append('line_'+head+'_mismatch')
                 check['ok'] = not check['errors']
                 self.save(job, 'created', verification=check)
                 if not check['ok']:
@@ -500,6 +578,11 @@ class Engine:
         def run():
             try:
                 while not self.stop.wait(1):
+                    try:
+                        self.recover_uploads()
+                    except sqlite3.DatabaseError:
+                        print('Cloud upload-intent scan unavailable; no new work started', flush=True)
+                        continue
                     for path in sorted(self.folder.glob('*.json')):
                         if self.stop.is_set():
                             break
@@ -533,4 +616,4 @@ def render_status(doc_id, filename, job):
     rows = ''.join('<tr><th>'+esc(k.replace('_', ' '))+'</th><td>'+esc(fields[k])+'</td></tr>'
                    for k in ('vendor_name','vendor_gstin','bill_number','bill_date','currency_code',*MONEY) if k in fields)
     refresh = '' if job['status'] in TERMINAL else '<script>setTimeout(()=>location.reload(),2500)</script>'
-    return '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Invoice · Sattva Bills</title><style>body{font:16px system-ui;color:#112033;max-width:800px;margin:40px auto;padding:0 18px}h1{overflow-wrap:anywhere}td,th{text-align:left;padding:10px;border-bottom:1px solid #ddd;overflow-wrap:anywhere}table{width:100%;table-layout:fixed}a{color:#245ddc}p{line-height:1.6}</style><header><a href="/">Bills inbox</a></header><h1>'+esc(filename)+'</h1><p role="status"><strong>'+esc(job['status'].replace('_',' ').title())+'</strong> — '+esc(job['message'])+'</p>'+link+'<p><a href="/invoice/'+esc(doc_id)+'" target="_blank" rel="noopener">Open original PDF ↗</a></p><table>'+rows+'</table>'+refresh+'</html>'
+    return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Invoice · Sattva Bills</title><style>body{font:16px system-ui;color:#112033;max-width:800px;margin:40px auto;padding:0 18px}h1{overflow-wrap:anywhere}td,th{text-align:left;padding:10px;border-bottom:1px solid #ddd;overflow-wrap:anywhere}table{width:100%;table-layout:fixed}a{color:#245ddc}p{line-height:1.6}</style></head><body><header><a href="/">Bills inbox</a></header><h1>'+esc(filename)+'</h1><p role="status"><strong>'+esc(job['status'].replace('_',' ').title())+'</strong> — '+esc(job['message'])+'</p>'+link+'<p><a href="/invoice/'+esc(doc_id)+'" target="_blank" rel="noopener">Open original PDF ↗</a></p><table>'+rows+'</table>'+refresh+'</body></html>'

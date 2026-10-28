@@ -38,7 +38,7 @@ def core_fixture():
         if str(path).endswith('.env'):
             return io.StringIO('')
         return real_open(path, *args, **kwargs)
-    with patch('builtins.open', side_effect=isolated_open):
+    with patch('builtins.open', side_effect=isolated_open), patch.dict(os.environ,{'APP_AUTOMATION_POLICY':''}):
         return a.load_core()
 
 
@@ -69,6 +69,7 @@ class FakeZoho:
                              'gst_no':GSTIN,
                              'total':118, 'taxes':[{'tax_name':'CGST9','tax_amount':9},
                              {'tax_name':'SGST9','tax_amount':9}], 'documents':[]}
+                self.bill['line_items'][0]['line_item_taxes']=[{'tax_name':'CGST9','tax_amount':9},{'tax_name':'SGST9','tax_amount':9}]
             if self.lose_response or self.lose_without_create:
                 raise a.Hold('Synthetic lost response')
         return {'code':0, 'bill':self.bill}
@@ -189,6 +190,29 @@ class CloudAutomationTests(unittest.TestCase):
         self.assertEqual('needs_review',job['status'])
         self.assertIn('line_account_id_mismatch',job['verification']['errors'])
         self.assertEqual((1,0),(self.zoho.posts,self.zoho.attachments))
+    def test_equal_line_total_does_not_hide_changed_quantity_and_rate(self):
+        original_call=self.zoho.call
+        def changed_units(endpoint,params=None,payload=None):
+            result=original_call(endpoint,params,payload)
+            if self.zoho.bill:self.zoho.bill['line_items'][0].update(quantity=2,rate=50)
+            return result
+        self.zoho.call=changed_units
+        job=self.process()
+        self.assertEqual('needs_review',job['status'])
+        self.assertIn('line_quantity_mismatch',job['verification']['errors'])
+        self.assertIn('line_rate_mismatch',job['verification']['errors'])
+    def test_offsetting_line_gst_errors_are_not_hidden_by_equal_header_totals(self):
+        original_call=self.zoho.call
+        def wrong_head(endpoint,params=None,payload=None):
+            result=original_call(endpoint,params,payload)
+            if self.zoho.bill:
+                self.zoho.bill['line_items'][0]['line_item_taxes']=[{'tax_name':'CGST9','tax_amount':'9.01'},{'tax_name':'SGST9','tax_amount':'8.99'}]
+            return result
+        self.zoho.call=wrong_head
+        job=self.process()
+        self.assertEqual('needs_review',job['status'])
+        self.assertIn('line_cgst_mismatch',job['verification']['errors'])
+        self.assertIn('line_sgst_mismatch',job['verification']['errors'])
     def test_pre_create_tax_group_rounding_disagreement_is_held(self):
         p=invoice()
         p['line_items']=[{'description':'Documentation','quantity':1,'rate':'0.06','tax_percentage':18}]*2
@@ -223,6 +247,10 @@ class BudgetAndProviderTests(unittest.TestCase):
     def test_exhausted_budget_never_sends_paid_request(self):
         a.atomic(self.folder/'ai-budget.json',{'reserved_usd':'1','calls_reserved':20})
         with self.assertRaises(a.Hold):a.Haiku(self.folder,self.transport).extract(PDF)
+        self.assertEqual(1,len(self.calls))
+    def test_failed_directory_sync_prevents_paid_request(self):
+        with patch.object(a,'sync_directory',side_effect=OSError('simulated unsynced directory')):
+            with self.assertRaises(OSError):a.Haiku(self.folder,self.transport).extract(PDF)
         self.assertEqual(1,len(self.calls))
     def test_oversized_input_never_sends_paid_request(self):
         calls=[]

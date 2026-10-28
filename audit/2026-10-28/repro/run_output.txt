@@ -1,5 +1,5 @@
 test_A_upload_enqueue_blocks_while_worker_holds_lock (__main__.Findings.test_A_upload_enqueue_blocks_while_worker_holds_lock) ... 
-[A] enqueue of a second upload waited 5.82s behind one job
+[A] enqueue of a second upload waited 6.02s behind one job
 ok
 test_B_transient_readback_failure_after_create_is_terminal_and_unattached (__main__.Findings.test_B_transient_readback_failure_after_create_is_terminal_and_unattached) ... 
 [B] after one transient GET failure: status=needs_review posts=1 attachments=0 msg='Zoho read-back differs: exception:Hold: Provider connection or response failed. No automatic retry.'
@@ -59,6 +59,6 @@ test_N_budget_capacity (__main__.RealZohoClient.test_N_budget_capacity) ...
 ok
 
 ----------------------------------------------------------------------
-Ran 14 tests in 7.874s
+Ran 14 tests in 7.933s
 
 OK

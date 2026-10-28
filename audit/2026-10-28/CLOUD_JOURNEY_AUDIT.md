@@ -8,7 +8,9 @@ Auditor: Claude Code (cloud session), independent of the implementer. Audited re
 
 - No genuine new bill has ever been created by the cloud release. Financial creation is held off, and the live acceptance step is still pending.
 - The deployed code has confirmed defects in duplicate detection, supplier-registration evidence, post-creation recovery and continuity, as listed below.
-- The service's approved lifetime ends 4 November 2026 at 12:28:59 IST, and its AI allowance covers roughly 4–7 invoices.
+- The service's approved lifetime ends 4 November 2026 at 12:28:59 IST. If the configured AI allowance is the approved USD 0.50 (Notion event 021; the runtime value was not readable), it covers roughly 4–7 invoices.
+
+Approval basis: per-invoice human approval is not a gate for this journey. The owner explicitly authorised conditional automatic creation of qualifying NEW cloud uploads after acceptance (Notion events 019 and 021; PR #24's `AGENTS.md` amendment, not yet on `main`). The Windows workflow keeps its approval step. This audit preserves that scope; it does not reinterpret it.
 
 ## Access limits of this audit
 
@@ -38,7 +40,7 @@ Each probe ID refers to `repro/test_audit_journey.py`. All 14 probes ran and beh
 | 6 | Bill flow | A transient GET or attachment failure after creation becomes terminal `needs_review`. The created bill stays unattached and is never revisited | Probe B: posts=1, attachments=0, terminal | CONFIRMED |
 | 7 | Explanation | A definitive Zoho rejection (HTTP 4xx) is shown as "Previous creation outcome is uncertain". Zoho's actual reason is discarded (`json_request`, `Zoho.call`) | Probe C | CONFIRMED |
 | 8 | Needs a developer | Transient holds are terminal: provider overload/HTTP 5xx, connection loss, interrupted parse, Zoho sign-in failure. There is no retry action, and re-uploading the identical PDF is refused (UNIQUE sha256 → 409). Recovery needs someone to edit server state | Probe J; `app.py:116,507` | CONFIRMED |
-| 9 | Continuity | AI allowance: each call reserves `input×1.25 + 6,000 output tokens` and never releases the reservation. That is about USD 0.07–0.12 per invoice. At USD 0.50 that is ~4–7 invoices, and the code's hard maximum of USD 1.00 is ~8–14 invoices. After that, every upload holds. The four approved acceptance calls use part of it | Probe N; `automation.py:157–163` | CONFIRMED (arithmetic); actual `APP_AI_BUDGET_USD` value BLOCKED |
+| 9 | Continuity | AI allowance: each call reserves `input×1.25 + 6,000 output tokens` and never releases the reservation. That is about USD 0.07–0.12 per invoice. At the approved USD 0.50 (if that is the configured value) that is ~4–7 invoices, and the code's hard maximum of USD 1.00 is ~8–14 invoices. After that, every upload holds. The four approved acceptance calls use part of it | Probe N; `automation.py:157–163` | CONFIRMED (arithmetic); actual `APP_AI_BUDGET_USD` value BLOCKED |
 | 10 | Continuity | The approved service stops 4 Nov 2026 12:28:59 IST (Notion 017/021). Bill flow ends then. The expiry and backup launcher is private, not in GitHub, so this audit could not review it | Notion 017, 021 | Owner decision; launcher UNVERIFIED |
 | 11 | Silent stop | An unexpected error in the worker's intent scan (anything but `sqlite3.DatabaseError`, e.g. disk full) kills the worker thread. `/healthz` still says `ok`, and uploads stay "Queued" forever | Probe I | CONFIRMED |
 | 12 | Mobile UX | An upload request waits for the whole in-flight job, including two paid model calls, because `enqueue` shares the processing lock | Probe A: waited 5.8 s behind a 6 s synthetic job | CONFIRMED |

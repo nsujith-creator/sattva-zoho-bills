@@ -1,6 +1,7 @@
 """Independent audit probes of PR24 (8ef5c7a). Synthetic data, fake providers, no network.
 
-Run: git worktree add /tmp/pr24 8ef5c7a1709c2d09a5c1e73792ed8365bfab1886
+Run: git fetch origin refs/pull/24/head
+     git worktree add --detach /tmp/pr24 8ef5c7a1709c2d09a5c1e73792ed8365bfab1886
      PR24_ROOT=/tmp/pr24 python3 -W ignore audit/2026-10-28/repro/test_audit_journey.py
 """
 import contextlib, copy, hashlib, json, os, sqlite3, sys, tempfile, threading, time, unittest
@@ -39,11 +40,12 @@ class Base(unittest.TestCase):
 class Findings(Base):
     def test_A_upload_enqueue_blocks_while_worker_holds_lock(self):
         # Worker holds Engine.lock for the whole job, including both paid calls.
-        slow = threading.Event()
+        slow, inside = threading.Event(), threading.Event()
         def extract(pdf, second=False):
-            slow.wait(3); return copy.deepcopy(invoice())
+            inside.set(); slow.wait(3); return copy.deepcopy(invoice())
         self.ai.extract = extract
-        t = threading.Thread(target=self.engine.process, args=(DOC,)); t.start(); time.sleep(0.2)
+        t = threading.Thread(target=self.engine.process, args=(DOC,)); t.start()
+        self.assertTrue(inside.wait(5))  # worker now holds Engine.lock inside the paid call
         start = time.monotonic(); self.engine.enqueue('b'*32); waited = time.monotonic()-start
         t.join()
         print(f'\n[A] enqueue of a second upload waited {waited:.2f}s behind one job')

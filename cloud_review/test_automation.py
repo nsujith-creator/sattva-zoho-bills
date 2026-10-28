@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 import unittest
 from decimal import Decimal
 from pathlib import Path
@@ -16,6 +17,12 @@ import automation as a
 PDF = b'%PDF-1.4\nsynthetic invoice\n%%EOF'
 DOC = 'a'*32
 GSTIN = '27ABCDE1234F1Z5'
+
+
+def source_fixture():
+    return ('SYNTHETIC FREIGHT VENDOR\nSupplier GSTIN '+GSTIN+'\nBuyer GSTIN '+a.OWNER_GSTIN+
+            '\nInvoice SYNTHETIC-001\nInvoice Date 2026-10-28\nCurrency INR\n'
+            'Documentation    100.00    18%\nSAC 996713\nSubtotal 100.00\nCGST 9.00\nSGST 9.00\nGrand Total 118.00\n')
 
 
 def invoice():
@@ -94,7 +101,7 @@ class CloudAutomationTests(unittest.TestCase):
             db.execute('INSERT INTO invoices VALUES(?,?,?,?)',(DOC,'synthetic.pdf',hashlib.sha256(PDF).hexdigest(),PDF))
         self.ai = FakeAI(invoice())
         self.zoho = FakeZoho(self.folder)
-        self.engine = a.Engine(self.db, self.core, self.ai, self.zoho)
+        self.engine = a.Engine(self.db, self.core, self.ai, self.zoho, source_reader=lambda pdf: source_fixture())
         self.engine.enqueue(DOC)
         self.env = patch.dict(os.environ, {'APP_AUTOMATION_POSTING':'1'})
         self.env.start()
@@ -106,7 +113,9 @@ class CloudAutomationTests(unittest.TestCase):
         self.env.stop()
         self.tmp.cleanup()
     def process(self):
-        self.engine.process(DOC)
+        deadline = (self.engine.read(DOC) or {}).get('retry_at', 0)
+        with patch.object(a.time, 'time', return_value=max(time.time(), deadline)+.01):
+            self.engine.process(DOC)
         return self.engine.read(DOC)
     def test_clean_upload_posts_once_verifies_and_attaches_source(self):
         job = self.process()
@@ -120,7 +129,9 @@ class CloudAutomationTests(unittest.TestCase):
             self.assertEqual('validated',self.process()['status'])
         self.assertEqual(0,self.zoho.posts)
     def test_existing_invoice_never_creates_or_changes_bill(self):
-        self.zoho.bill = {'bill_id':'999'}
+        payload = a.validate(invoice(), self.core, {'SYNTHETIC FREIGHT VENDOR':{'id':'123','gst_no':GSTIN}})
+        self.zoho.bill = {**payload, 'bill_id':'999', 'sub_total':100, 'tax_total':18, 'total':118,
+                          'gst_no':GSTIN, 'taxes':[{'tax_name':'CGST9','tax_amount':9}, {'tax_name':'SGST9','tax_amount':9}]}
         self.assertEqual('duplicate',self.process()['status'])
         self.assertEqual((0,0),(self.zoho.posts,self.zoho.attachments))
     def test_disagreement_between_source_reads_stops_posting(self):
@@ -150,7 +161,8 @@ class CloudAutomationTests(unittest.TestCase):
     def test_uncertain_create_without_record_is_not_reposted(self):
         self.zoho.lose_without_create = True
         self.assertEqual('reconcile_pending',self.process()['status'])
-        self.assertEqual('needs_review',self.process()['status'])
+        for _ in range(4):self.process()
+        self.assertEqual('retryable',self.process()['status'])
         self.assertEqual(1,self.zoho.posts)
     def test_recovery_does_not_modify_another_matching_record(self):
         self.zoho.lose_response = True
@@ -160,7 +172,7 @@ class CloudAutomationTests(unittest.TestCase):
         self.assertEqual((1,0),(self.zoho.posts,self.zoho.attachments))
     def test_interrupted_paid_extraction_is_not_repeated(self):
         job=self.engine.read(DOC);self.engine.save(job,'parsing')
-        self.assertEqual('needs_review',self.process()['status'])
+        self.assertEqual('retryable',self.process()['status'])
         self.assertEqual(0,self.ai.calls)
     def test_corrupt_or_misdirected_journal_never_restarts_processing(self):
         path=self.engine.job_path(DOC)

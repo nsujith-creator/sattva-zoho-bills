@@ -18,7 +18,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 from urllib.parse import parse_qs, quote
 from auth import OwnerSessions, cookie_value
-from automation import Engine, enabled as automation_enabled, render_status
+from automation import Engine, Hold, MAX_PDF as AUTOMATIC_MAX_PDF, enabled as automation_enabled, render_status
 
 MAX_PDF = 12 * 1024 * 1024
 PAGE_SIZE = 100
@@ -61,7 +61,7 @@ button.addEventListener('click', () => fileInput.click());
 async function uploadInvoice(file) {
   if (!file) return;
   if (!file.name.toLowerCase().endsWith('.pdf')) { show('Choose a PDF invoice.', true); return; }
-  if (file.size > 12 * 1024 * 1024) { show('Maximum file size is 12 MB.', true); return; }
+    if (file.size > __MAX_PDF__) { show('Maximum file size is __MAX_MB__ MB.', true); return; }
   button.disabled = true; button.textContent = 'Uploading…'; show('Uploading ' + file.name + '…');
   try {
     const response = await fetch('/api/invoices', {
@@ -71,7 +71,7 @@ async function uploadInvoice(file) {
     });
     const data = await response.json();
     if (!response.ok) { show(data.error || 'Upload failed. Try again.', true); return; }
-    if (data.status === 'queued') { window.location.assign('/review/'+data.id); }
+    if (data.status === 'queued' || data.status === 'existing') { window.location.assign('/review/'+data.id); }
     else { show('Saved. This invoice has not been sent to Zoho.'); window.location.reload(); }
   } catch (_) { show('Connection interrupted. Check the inbox before retrying.', true); }
   finally { button.disabled = false; button.textContent = 'Choose PDF'; fileInput.value=''; }
@@ -140,14 +140,23 @@ def template(rows, csrf, total=None, page=1, pages=1, automation=None):
     pagination = (f'<nav class="pagination" aria-label="Invoice pages">{previous}<span>Page {page} of {pages}</span>{following}</nav>' if pages > 1 else '')
     mode = 'Haiku → checked Zoho bills' if automation else 'Private preview · No posting'
     intro = 'Drop a vendor bill here. Haiku reads it, checks run automatically, and matching bills go to Zoho. Open an invoice below to see its result.' if automation else 'A private place for incoming supplier invoices. Upload a PDF, open the original and review it before any accounting action.'
+    warning = ''
+    if automation and os.environ.get('APP_AUTOMATION_POSTING') != '1':
+        mode = 'Invoice checks · Posting pending acceptance'
+        intro = 'Upload a supplier PDF to run its source checks. Creating bills in Zoho is waiting for release acceptance.'
+    if automation and not automation.healthy():
+        warning = '<p role="alert">Processing is temporarily unavailable. Saved originals are retained; processing resumes when the service recovers.</p>'
     footer = 'Original PDFs stay private. Duplicate bills are blocked. Unclear invoices show the reason here instead of being posted.' if automation else 'Review-only prototype. No AI extraction, payment functionality, Zoho authentication or bill-posting endpoints are included. Uploads must remain on a persistent private cloud volume before real invoices are used.'
+    maximum = AUTOMATIC_MAX_PDF if automation else MAX_PDF
+    max_mb = '5' if automation else '12'
+    upload_js = JS.replace('__MAX_PDF__', str(maximum)).replace('__MAX_MB__', max_mb)
     return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf-token" content="{html.escape(csrf, quote=True)}"><title>Sattva · Bills Review</title><style>{CSS}</style></head><body>
 <header><div class="brand">SATTVA <span>Bills</span></div><div class="mode">{mode}</div></header>
 <main><div class="eyebrow">INVOICE CONTROL</div><h1>Every bill,<br>accounted for.</h1>
-<p class="lede">{intro}</p>
-<div class="upload"><div><strong>Drop a supplier invoice here</strong><div class="hint">PDF only · Maximum 12 MB · Stored privately on the server</div></div><div><input id="pdf" type="file" accept=".pdf,application/pdf" aria-label="Select PDF invoice"><button id="upload-btn" type="button">Choose PDF</button></div></div><div id="message" role="status" aria-live="polite"></div>
+<p class="lede">{intro}</p>{warning}
+<div class="upload"><div><strong>Drop a supplier invoice here</strong><div class="hint">PDF only · Maximum {max_mb} MB · Stored privately on the server</div></div><div><input id="pdf" type="file" accept=".pdf,application/pdf" aria-label="Select PDF invoice"><button id="upload-btn" type="button">Choose PDF</button></div></div><div id="message" role="status" aria-live="polite"></div>
 <section><div class="section-head"><h2>Review inbox</h2><span class="count">{total} invoice{'s' if total != 1 else ''}</span></div><div class="grid-head"><span>Original PDF</span><span>Received (UTC)</span><span>Status</span></div>{content}{pagination}</section>
-<footer>{footer}</footer></main><script>{JS}</script></body></html>'''
+<footer>{footer}</footer></main><script>{upload_js}</script></body></html>'''
 
 
 class Server(ThreadingHTTPServer):
@@ -292,7 +301,8 @@ main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%
     def do_GET(self):
         path = urlsplit(self.path).path
         if path == '/healthz':
-            self.reply(200, b'ok')
+            healthy = not self.server.automation or self.server.automation.healthy()
+            self.reply(200 if healthy else 503, b'ok' if healthy else b'processing unavailable')
             return
         if path == '/favicon.ico':
             self.reply(204)
@@ -331,7 +341,7 @@ main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%
                 self.err(404, 'Invoice not found')
                 return
             if self.server.automation:
-                self.reply(200, render_status(doc_id, row[0], self.server.automation.read(doc_id)).encode(), 'text/html; charset=utf-8')
+                self.reply(200, render_status(doc_id, row[0], self.server.automation.read(doc_id), self.session['csrf']).encode(), 'text/html; charset=utf-8')
                 return
             self.reply(200, render(doc_id, row[0], json.loads(row[1]) if row[1] else None, self.session['csrf'], json.loads(row[2]) if row[2] else None, configured(), draft_revision(row[1], row[3])).encode(), 'text/html; charset=utf-8')
         elif path.startswith('/invoice/'):
@@ -455,6 +465,21 @@ main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%
         if path == '/logout':
             self.logout_submit()
             return
+        if path.startswith('/api/retry/'):
+            doc_id = path.removeprefix('/api/retry/')
+            if not self.server.automation or not re.fullmatch(r'[a-f0-9]{32}', doc_id):
+                self.err(404, 'Invoice not found'); return
+            form = self.auth_form()
+            if form is None:
+                return
+            if not secrets.compare_digest(form.get('csrf', ''), self.session['csrf']):
+                self.err(403, 'Retry token missing. Refresh and try again.'); return
+            try:
+                self.server.automation.retry(doc_id)
+            except Hold as exc:
+                self.err(409, str(exc)); return
+            self.reply(303, headers={'Location':'/review/'+doc_id})
+            return
         if path.startswith('/api/extract/'):
             if self.server.automation:
                 self.err(409, 'Extraction is managed by automatic processing. Open the invoice status.'); return
@@ -482,8 +507,9 @@ main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%
         except ValueError:
             self.err(411, 'File size required.')
             return
-        if size < 8 or size > MAX_PDF:
-            self.err(413, 'PDF must be under 12 MB and nonempty.')
+        maximum = AUTOMATIC_MAX_PDF if self.server.automation else MAX_PDF
+        if size < 8 or size > maximum:
+            self.err(413, 'PDF must be nonempty and within the '+('5' if self.server.automation else '12')+' MB limit.')
             return
         filename = unquote(self.headers.get('X-Filename', 'invoice.pdf'))
         filename = filename.replace('\\', '/').rsplit('/', 1)[-1].strip()
@@ -505,6 +531,12 @@ main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%
                     db.execute('INSERT INTO suggestions(invoice_id,payload_json,created_at) VALUES(?,?,?)',
                         (doc_id,json.dumps(intent),datetime.now(timezone.utc).isoformat()))
         except sqlite3.IntegrityError:
+            if self.server.automation:
+                with connect(self.server.db_path) as db:
+                    existing = db.execute('SELECT id FROM invoices WHERE sha256=?', (digest,)).fetchone()
+                if existing:
+                    self.reply(200, json.dumps({'id':existing[0], 'status':'existing'}).encode(), 'application/json; charset=utf-8')
+                    return
             self.err(409, 'This exact PDF was already uploaded. Check the inbox.')
             return
         if self.server.automation:

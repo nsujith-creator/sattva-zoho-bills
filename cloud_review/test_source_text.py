@@ -27,6 +27,48 @@ def text_pdf(text):
 
 
 class SourceText(unittest.TestCase):
+    def test_purchase_order_cannot_replace_the_labelled_invoice_number(self):
+        text=source_fixture().replace('Invoice SYNTHETIC-001','Invoice ACTUAL-999\nPurchase Order SYNTHETIC-001')
+        with self.assertRaises(a.Hold):a.corroborate_source(invoice(),text,core_fixture())
+
+    def test_shipper_registration_cannot_replace_the_labelled_buyer(self):
+        text=source_fixture().replace('Buyer GSTIN '+a.OWNER_GSTIN,'Buyer GSTIN 27ZZZZZ9999Z1Z9\nShipper GSTIN '+a.OWNER_GSTIN)
+        with self.assertRaises(a.Hold):a.corroborate_source(invoice(),text,core_fixture())
+
+    def test_reference_currency_cannot_replace_invoice_currency(self):
+        text=source_fixture().replace('Currency INR','Invoice currency USD\nReference currency INR')
+        with self.assertRaises(a.Hold):a.corroborate_source(invoice(),text,core_fixture())
+        text=source_fixture().replace('Currency INR','Currency INR                         Invoice currency USD')
+        with self.assertRaises(a.Hold):a.corroborate_source(invoice(),text,core_fixture())
+
+    def test_staggered_shipper_column_cannot_supply_missing_buyer_registration(self):
+        text=source_fixture().replace('Buyer GSTIN '+a.OWNER_GSTIN,
+             'Buyer: SOME OTHER PARTY\n                              Shipper: SATTVA\n'
+             '                              GSTIN: '+a.OWNER_GSTIN)
+        with self.assertRaises(a.Hold):a.corroborate_source(invoice(),text,core_fixture())
+
+    def test_each_charge_consumes_a_distinct_printed_row(self):
+        parsed=invoice();parsed['line_items']*=2
+        parsed.update(subtotal='200.00',tax_amount_cgst='18.00',tax_amount_sgst='18.00',invoice_total='236.00')
+        text=source_fixture().replace('SAC 996713\nSubtotal','SAC 996713\nFreight    100.00    18%\nSAC 996713\nSubtotal')
+        text=text.replace('Subtotal 100.00','Subtotal 200.00').replace('CGST 9.00','CGST 18.00').replace('SGST 9.00','SGST 18.00').replace('Grand Total 118.00','Grand Total 236.00')
+        with self.assertRaises(a.Hold):a.corroborate_source(parsed,text,core_fixture())
+        # Actual repeated charges remain admissible when there are two source rows.
+        a.corroborate_source(parsed,text.replace('Freight    100.00','Documentation    100.00'),core_fixture())
+
+    def test_due_date_requires_its_own_printed_deadline(self):
+        parsed=invoice();parsed['due_date']='2030-01-01'
+        with self.assertRaises(a.Hold):a.corroborate_source(parsed,source_fixture()+'Due Date 2026-11-28\n',core_fixture())
+        parsed['due_date']='2026-11-28'
+        a.corroborate_source(parsed,source_fixture()+'Due Date 2026-11-28\n',core_fixture())
+        with self.assertRaises(a.Hold):a.corroborate_source(parsed,source_fixture(),core_fixture())
+
+    def test_customer_tax_id_and_two_column_invoice_to_preserve_buyer_role(self):
+        for block in ('Customer\nSYNTHETIC BUYER\nTax id.no. '+a.OWNER_GSTIN,
+                      'Payable to: SYNTHETIC SUPPLIER         Invoice To: SYNTHETIC BUYER\n'
+                      +' '*len('Payable to: SYNTHETIC SUPPLIER         ')+'GSTIN: '+a.OWNER_GSTIN):
+            a.corroborate_source(invoice(),source_fixture().replace('Buyer GSTIN '+a.OWNER_GSTIN,block),core_fixture())
+
     def test_split_gst_rows_with_container_line_between(self):
         text = source_fixture().replace('Documentation    100.00    18%\nSAC 996713',
             'Documentation    CGST 9%    9.00    100.00\nContainer SYNTHETIC\nSAC 996713  SGST 9%  9.00')

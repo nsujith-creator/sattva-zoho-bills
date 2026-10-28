@@ -45,6 +45,16 @@ git diff --check
 
 ## Deployment and live proof still outstanding
 
+### R16 independent review and corrections
+
+After explicit owner consent, one independent Codex reviewer examined only the12 pinned source/test/documentation files, without invoices, credentials, external connectors or production access. It independently demonstrated five remaining source-admission bypasses: PO number substituted for invoice number, shipper registration substituted for buyer registration, reference INR substituted for USD invoice currency, one printed charge reused twice, and an invented due date. All five were fixed. Follow-up within the same review also caught staggered-column buyer leakage and conflicting currency labels on one row; both were fixed.
+
+The reviewer's12 isolated fake-core probes now produce the intended results:7 unsafe cases rejected and5 positive controls accepted. It identified no further supported blocker within its bounded source review. This is not a certification of unseen core/provider/container/live behavior. Reviewed automation.py SHA256 `cc55958e312a9c90d41898542b94fd6e19f62158a7822c7c35adbf2e04b683a8`, test_source_text.py `1603f349bdcad440a3f848d3cca1b95b7d8f68e841507b520ed30b0f434f6d87`.
+
+Current full suite: **106 cloud tests passed**,40.043 seconds; **60 core tests passed**,7.140 seconds. Both originals also passed the stricter deterministic guard using retained local facts, including their printed due dates. No model inference or financial write. All620 cached extractions and10 protected Windows hashes remain unchanged; candidate credential scan0 matches. The earlier99-test result above is retained as dated iteration evidence, not the current count.
+
+At the later R16 read, Railway no longer reported the old pending patch. The live deployment was still379b8fb4 at8ef5c7a, no newer deployment appeared, and no original-acceptance log was returned. The disappearance of the pending patch does not establish a successful deployment or completed acceptance. No changes were resubmitted. This corrected candidate still needs explicit merge/deployment approval and actual acceptance.
+
 No new candidate build, merge, production deployment, paid inference or financial write was performed. Docker is unavailable locally; the new Debian image/package installation still requires a real build. At13:49UTC, Railway's earlier acceptance patch `c0d94895-9d59-427a-85d8-8403e689b8d3` remained APPLYING with no new deployment. It was not resubmitted or modified beneath that operation. The live deployment remains the older8ef5c7a release.
 
 The four original-invoice Haiku checks are still unused. They must run against the approved release after its build/deployment and independent review, followed by a genuine qualifying NEW invoice, exact Zoho read-back, attachment hash verification and measured upload-to-result time. An existing mismatching invoice must hold, not be force-labelled Duplicate. No synthetic financial record may be created in the live books to manufacture this proof.

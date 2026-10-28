@@ -97,31 +97,66 @@ def source_text(pdf):
     return text
 
 
+def printed_date_forms(value):
+    try:
+        value = date.fromisoformat(value)
+    except (ValueError, TypeError) as exc:
+        raise Hold('Extracted date is invalid.') from exc
+    return [value.isoformat(), value.strftime('%d/%m/%Y'), value.strftime('%d-%m-%Y'),
+            value.strftime('%d-%b-%Y'), value.strftime('%b %d, %Y'), value.strftime('%d %b %Y'),
+            value.strftime('%d-%b-%y'), value.strftime('%b')+' '+str(value.day)+', '+str(value.year)]
+
+
+def printed_buyer_registrations(text):
+    # pdftotext -layout keeps the column positions of multi-party address blocks.
+    # A role starts a bounded block; another role in that column ends it.
+    roles = re.compile(r'\b(Buyer|Bill(?:ed)?\s+To|Invoice\s+To|Recipient|Customer|Shipper|Consignee|Supplier|Seller|Payable\s+to|Service\s+Provider)(?=\s*:|\s+GSTIN\b|\s*$)', re.I)
+    buyer_roles = {'BUYER', 'BILL TO', 'BILLED TO', 'INVOICE TO', 'RECIPIENT', 'CUSTOMER'}
+    registration = re.compile(r'(?:GST(?:IN|\s*(?:No\.?|Number))|Tax\s+id\.?\s*no\.?)\s*[:.]?\s*(\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z0-9]{2})\b', re.I)
+    rows = text.splitlines(); found = set()
+    for index, row in enumerate(rows):
+        labels = list(roles.finditer(row))
+        for pos, label in enumerate(labels):
+            if ' '.join(label[1].upper().split()) not in buyer_roles:
+                continue
+            start = label.start(); end = labels[pos+1].start() if pos+1 < len(labels) else None
+            for offset, following in enumerate(rows[index:index+18]):
+                if offset and any(m.start() <= start+2 for m in roles.finditer(following)):
+                    break
+                segment = following[start:end]
+                for match in registration.finditer(segment):
+                    if (offset == 0 and re.fullmatch(r'[ \t:.-]*', segment[label.end()-start:match.start()])) or (offset and match.start() <= 2):
+                        found.add(match[1].upper())
+    return found
+
+
 def corroborate_source(parsed, text, core):
     """Require independently extracted printed evidence; absence never becomes approval."""
     compact = lambda value: re.sub(r'[^A-Z0-9]', '', str(value).upper())
     tokens = set(re.findall(r'[A-Z0-9]+(?:[-/][A-Z0-9]+)*', text.upper()))
-    if compact(parsed.get('bill_number')) not in {compact(x) for x in tokens}:
-        raise Hold('Invoice number is not evidenced in the PDF text.')
+    identities = set()
+    for row in text.splitlines():
+        for match in re.finditer(r'\b(?:tax[ \t]+)?(?:invoice|bill)(?:[ \t]*(?:number|no\.?|#|id))?[ \t]*[:#]?[ \t]*([A-Z0-9][A-Z0-9/-]*)\b', row, re.I):
+            if any(c.isdigit() for c in match[1]):
+                identities.add(compact(match[1]))
+    cma = core.is_cma_cgm_invoice(parsed.get('vendor_name'), text)
+    if cma:
+        number = core.extract_cma_cgm_invoice_number_from_pdf_text(text, core.extract_mbl_from_pdf_text(text))
+        if number:
+            identities.add(compact(number))
+    if identities != {compact(parsed.get('bill_number'))}:
+        raise Hold('The labelled invoice number is missing, conflicting or different from the PDF text.')
     for key in ('buyer_gstin', 'vendor_gstin'):
         value = str(parsed.get(key) or '').strip().upper()
         if value and value not in text.upper():
             raise Hold('Printed '+key.replace('_', ' ')+' differs from the PDF text.')
-    if not parsed.get('buyer_gstin') or parsed['buyer_gstin'] not in text.upper():
-        raise Hold('The buyer GSTIN is not evidenced on this original.')
+    if not parsed.get('buyer_gstin') or printed_buyer_registrations(text) != {parsed['buyer_gstin']}:
+        raise Hold('The buyer GSTIN is not uniquely evidenced in the printed buyer block.')
     supplier = ' '.join(re.findall(r'[A-Z0-9]+', str(parsed.get('vendor_name') or '').upper()))
     normalized = ' '.join(re.findall(r'[A-Z0-9]+', text.upper()))
     if not supplier or supplier not in normalized:
         raise Hold('Supplier name is not evidenced in the PDF text.')
-    try:
-        printed_date = date.fromisoformat(parsed['bill_date'])
-    except (ValueError, TypeError, KeyError) as exc:
-        raise Hold('Invoice date is invalid.') from exc
-    dates = [printed_date.isoformat(), printed_date.strftime('%d/%m/%Y'),
-             printed_date.strftime('%d-%m-%Y'), printed_date.strftime('%d-%b-%Y'),
-             printed_date.strftime('%b %d, %Y'), printed_date.strftime('%d %b %Y'),
-             printed_date.strftime('%d-%b-%y'),
-             printed_date.strftime('%b')+' '+str(printed_date.day)+', '+str(printed_date.year)]
+    dates = printed_date_forms(parsed.get('bill_date'))
     date_text = re.sub(r'\s+', ' ', text).upper()
     if not any(re.sub(r'\s+', ' ', value).upper() in date_text for value in dates):
         raise Hold('Invoice date is not evidenced in the PDF text.')
@@ -138,6 +173,13 @@ def corroborate_source(parsed, text, core):
     candidates = labelled_dates or generic_dates[:1]
     if not candidates or not all(any(value.startswith(d.upper()) for d in dates) for value in candidates):
         raise Hold('The labelled invoice date differs from the extracted date.')
+    if parsed.get('due_date') is not None:
+        due_forms = printed_date_forms(parsed['due_date'])
+        due_rows = [m[1].strip().upper() for row in text.splitlines()
+                    if (m := re.search(r'\b(?:due\s+date|payable\s+by)\s*:?\s*(.+)', row, re.I))
+                    and re.match(r'(?:\d|Jan\b|Feb\b|Mar\b|Apr\b|May\b|Jun\b|Jul\b|Aug\b|Sep\b|Oct\b|Nov\b|Dec\b)', m[1].strip(), re.I)]
+        if not due_rows or not all(any(value.startswith(d.upper()) for d in due_forms) for value in due_rows):
+            raise Hold('The extracted due date is not evidenced by the printed payment deadline.')
     numbers = {Decimal(x.replace(',', '')) for x in re.findall(r'(?<![\w.])\d[\d,]*\.\d{2}(?!\d)', text)}
     for key in MONEY:
         value = amount(parsed.get(key))
@@ -164,12 +206,21 @@ def corroborate_source(parsed, text, core):
     charge_patterns = [re.compile(r'\W+'.join(re.findall(r'[A-Z0-9]+', str(item.get('description') or '').upper())), re.I)
                        for item in parsed.get('line_items', []) if re.findall(r'[A-Z0-9]+', str(item.get('description') or '').upper())]
     charge_starts = sorted({text.rfind('\n', 0, match.start())+1 for pattern in charge_patterns for match in pattern.finditer(text)})
+    consumed_rows = set()
     for line in parsed.get('line_items', []):
         description = ' '.join(re.findall(r'[A-Z0-9]+', str(line.get('description') or '').upper()))
         if not description or description not in normalized or amount(line.get('rate')) not in numbers:
             raise Hold('A charge description or taxable amount is not evidenced in the PDF text.')
         pattern = re.compile(r'\W+'.join(re.findall(r'[A-Z0-9]+', description)), re.I)
-        matches = list(pattern.finditer(text))
+        matches = []
+        for match in pattern.finditer(text):
+            begin = text.rfind('\n', 0, match.start())+1
+            end = text.find('\n', match.end()); end = len(text) if end < 0 else end
+            values = re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', text[match.end():end])
+            if begin not in consumed_rows and values and Decimal(values[-1].replace(',', '')) == amount(line['rate']):
+                matches = [match]; consumed_rows.add(begin); break
+        if not matches:
+            raise Hold('Each extracted charge must match a distinct printed charge row and amount.')
         bases, heads, percentages = [], {'CGST': set(), 'SGST': set(), 'IGST': set()}, set()
         charge_windows = []
         for match in matches:
@@ -211,8 +262,15 @@ def corroborate_source(parsed, text, core):
             tax_ok = percentages == {rate}
         if not tax_ok:
             raise Hold('A charge GST rate is missing or inconsistent on its printed rows.')
-    if str(parsed.get('currency_code') or '').upper() not in tokens:
-        raise Hold('Payable currency is not evidenced in the PDF text.')
+    currencies = set()
+    for row in text.splitlines():
+        for match in re.finditer(r'\binvoice\s+currency\s*[:(]?\s*([A-Z]{3})\b|^\s*(?:payable\s+)?currency\s*[:(]?\s*([A-Z]{3})\b', row, re.I):
+            currencies.add((match[1] or match[2]).upper())
+        match = re.search(r'\b(?:grand\s+total|total\s+payable\s+amount|invoice\s+total|total\s+amount)\b(.*)', row, re.I)
+        if match:
+            currencies.update(re.findall(r'\b[A-Z]{3}\b', match[1]))
+    if currencies != {str(parsed.get('currency_code') or '').upper()}:
+        raise Hold('The labelled invoice/payable currency is missing, conflicting or different.')
     mbl = core.extract_mbl_from_pdf_text(text)
     if parsed.get('mbl_number') and compact(parsed['mbl_number']) not in {compact(x) for x in tokens}:
         raise Hold('Bill-of-lading reference is not evidenced in the PDF text.')

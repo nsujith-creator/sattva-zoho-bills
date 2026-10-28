@@ -27,6 +27,45 @@ def text_pdf(text):
 
 
 class SourceText(unittest.TestCase):
+    def test_unrelated_branch_registration_cannot_replace_supplier_registration(self):
+        text=source_fixture().replace('Supplier GSTIN 27ABCDE1234F1Z5',
+             'Supplier GSTIN 27ZZZZZ9999Z1Z9\nBranch office GSTIN 27ABCDE1234F1Z5')
+        with self.assertRaises(a.Hold):a.corroborate_source(invoice(),text,core_fixture())
+        text=source_fixture().replace('Supplier GSTIN 27ABCDE1234F1Z5',
+             'Supplier: SYNTHETIC FREIGHT VENDOR\nBranch office GSTIN 27ABCDE1234F1Z5')
+        with self.assertRaises(a.Hold):a.corroborate_source(invoice(),text,core_fixture())
+
+    def test_printed_discount_cannot_be_hidden_by_two_zero_readings(self):
+        with self.assertRaises(a.Hold):a.corroborate_source(invoice(),source_fixture()+'Discount (INR): 10.00\n',core_fixture())
+        with self.assertRaises(a.Hold):a.corroborate_source(invoice(),source_fixture()+'Discount\n10.00\n',core_fixture())
+
+    def test_printed_sac_cannot_be_discarded(self):
+        parsed=invoice();parsed['line_items'][0]['hsn_or_sac']=''
+        with self.assertRaises(a.Hold):a.corroborate_source(parsed,source_fixture(),core_fixture())
+        text=source_fixture().replace('Documentation    100.00    18%\nSAC 996713',
+             'Description   SAC/HSN   Amount  GST\nDocumentation   996713   100.00  18%')
+        with self.assertRaises(a.Hold):a.corroborate_source(parsed,text,core_fixture())
+        parsed['line_items'][0]['hsn_or_sac']='996713'
+        a.corroborate_source(parsed,text,core_fixture())
+
+    def test_printed_charge_taxes_require_extracted_amounts(self):
+        text=source_fixture().replace('Documentation    100.00    18%\nSAC 996713',
+             'Documentation    CGST 9%    9.00    100.00\nSAC 996713  SGST 9%  9.00')
+        parsed=invoice()
+        with self.assertRaises(a.Hold):a.corroborate_source(parsed,text,core_fixture())
+        parsed['line_items'][0].update(cgst='9.00',sgst='9.00')
+        a.corroborate_source(parsed,text,core_fixture())
+        inline=source_fixture().replace('Documentation    100.00    18%\nSAC 996713',
+             'Documentation CGST 9% 9.00 SGST 9% 9.00 100.00\nSAC 996713')
+        parsed['line_items'][0]['sgst']=None
+        with self.assertRaises(a.Hold):a.corroborate_source(parsed,inline,core_fixture())
+        parsed['line_items'][0]['sgst']='9.00'
+        a.corroborate_source(parsed,inline,core_fixture())
+
+    def test_distinct_labelled_invoices_never_share_one_result(self):
+        text=source_fixture()+source_fixture().replace('Invoice SYNTHETIC-001','Invoice ACTUAL-999')
+        with self.assertRaises(a.Hold):a.corroborate_source(invoice(),text,core_fixture())
+
     def test_purchase_order_cannot_replace_the_labelled_invoice_number(self):
         text=source_fixture().replace('Invoice SYNTHETIC-001','Invoice ACTUAL-999\nPurchase Order SYNTHETIC-001')
         with self.assertRaises(a.Hold):a.corroborate_source(invoice(),text,core_fixture())
@@ -72,13 +111,15 @@ class SourceText(unittest.TestCase):
     def test_split_gst_rows_with_container_line_between(self):
         text = source_fixture().replace('Documentation    100.00    18%\nSAC 996713',
             'Documentation    CGST 9%    9.00    100.00\nContainer SYNTHETIC\nSAC 996713  SGST 9%  9.00')
-        a.corroborate_source(invoice(), text, core_fixture())
+        parsed=invoice();parsed['line_items'][0].update(cgst='9.00',sgst='9.00')
+        a.corroborate_source(parsed, text, core_fixture())
 
     def test_cma_abbreviated_tax_rows_are_bound_by_sac_and_taxable_base(self):
         parsed = invoice();parsed.update(vendor_name='CMA CGM TEST VENDOR',bill_number='INTEST000001',mbl_number='AMC111111')
         text = source_fixture().replace('SYNTHETIC FREIGHT VENDOR','CMA CGM TEST VENDOR').replace('Invoice SYNTHETIC-001','Bill of Lading: AMC111111   INTEST000001')
         text = text.replace('Documentation    100.00    18%\nSAC 996713',
             'Documentation    100.00\nTax summary\nCGST @ 9% DOC 996713 GH 100.00 9.00\nSGST @ 9% DOC 996713 GH 100.00 9.00')
+        parsed['line_items'][0].update(cgst='9.00',sgst='9.00')
         a.corroborate_source(parsed,text,core_fixture())
         parsed['line_items'][0]['hsn_or_sac']='999999'
         with self.assertRaises(a.Hold):a.corroborate_source(parsed,text,core_fixture())

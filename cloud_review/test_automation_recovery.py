@@ -131,6 +131,25 @@ class AuditRegressions(unittest.TestCase):
         self.assertEqual('verified', self.process()['status'])
         self.assertEqual((2, 1, 1), (self.ai.calls, self.zoho.posts, self.zoho.attachments))
 
+    def test_incomplete_numeric_readback_is_retried_without_another_create(self):
+        original=self.zoho.call; first=[True]
+        def incomplete(endpoint,params=None,payload=None):
+            result=original(endpoint,params,payload)
+            if endpoint.startswith('bills/') and first[0]:
+                first[0]=False;result=copy.deepcopy(result);result['bill']['line_items'][0]['quantity']=None
+            return result
+        self.zoho.call=incomplete
+        self.assertEqual('retry_wait',self.process()['status'])
+        self.assertEqual('verified',self.process()['status'])
+        self.assertEqual((2,1,1),(self.ai.calls,self.zoho.posts,self.zoho.attachments))
+
+    def test_validated_upload_resumes_after_posting_acceptance_without_reparsing(self):
+        with patch.dict(os.environ,{'APP_AUTOMATION_POSTING':'0'}):
+            self.assertEqual('validated',self.process()['status'])
+        self.assertEqual((2,0),(self.ai.calls,self.zoho.posts))
+        self.assertEqual('verified',self.process()['status'])
+        self.assertEqual((2,1,1),(self.ai.calls,self.zoho.posts,self.zoho.attachments))
+
     def test_definitive_rejection_retains_zoho_reason_and_never_enters_uncertain(self):
         original = self.zoho.call
         def rejected(endpoint, params=None, payload=None):

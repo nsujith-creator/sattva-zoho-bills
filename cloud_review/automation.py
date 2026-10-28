@@ -107,17 +107,19 @@ def printed_date_forms(value):
             value.strftime('%d-%b-%y'), value.strftime('%b')+' '+str(value.day)+', '+str(value.year)]
 
 
-def printed_buyer_registrations(text):
+def printed_buyer_registrations(text, party='buyer'):
     # pdftotext -layout keeps the column positions of multi-party address blocks.
     # A role starts a bounded block; another role in that column ends it.
     roles = re.compile(r'\b(Buyer|Bill(?:ed)?\s+To|Invoice\s+To|Recipient|Customer|Shipper|Consignee|Supplier|Seller|Payable\s+to|Service\s+Provider)(?=\s*:|\s+GSTIN\b|\s*$)', re.I)
-    buyer_roles = {'BUYER', 'BILL TO', 'BILLED TO', 'INVOICE TO', 'RECIPIENT', 'CUSTOMER'}
+    selected_roles = ({'BUYER', 'BILL TO', 'BILLED TO', 'INVOICE TO', 'RECIPIENT', 'CUSTOMER'} if party == 'buyer'
+                      else {'SUPPLIER', 'SELLER', 'PAYABLE TO', 'SERVICE PROVIDER'} if party == 'supplier'
+                      else {'SHIPPER', 'CONSIGNEE'})
     registration = re.compile(r'(?:GST(?:IN|\s*(?:No\.?|Number))|Tax\s+id\.?\s*no\.?)\s*[:.]?\s*(\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z0-9]{2})\b', re.I)
     rows = text.splitlines(); found = set()
     for index, row in enumerate(rows):
         labels = list(roles.finditer(row))
         for pos, label in enumerate(labels):
-            if ' '.join(label[1].upper().split()) not in buyer_roles:
+            if ' '.join(label[1].upper().split()) not in selected_roles:
                 continue
             start = label.start(); end = labels[pos+1].start() if pos+1 < len(labels) else None
             for offset, following in enumerate(rows[index:index+18]):
@@ -152,6 +154,18 @@ def corroborate_source(parsed, text, core):
             raise Hold('Printed '+key.replace('_', ' ')+' differs from the PDF text.')
     if not parsed.get('buyer_gstin') or printed_buyer_registrations(text) != {parsed['buyer_gstin']}:
         raise Hold('The buyer GSTIN is not uniquely evidenced in the printed buyer block.')
+    if parsed.get('vendor_gstin'):
+        supplier_regs = printed_buyer_registrations(text, 'supplier')
+        supplier_label = re.search(r'\b(?:Supplier|Seller|Payable\s+to|Service\s+Provider)(?=\s*:|\s+GSTIN\b|\s*$)', text, re.I|re.M)
+        if not supplier_regs and not supplier_label:
+            labelled = set()
+            for row in text.splitlines():
+                for match in re.finditer(r'\bGST(?:IN|\s*(?:No\.?|Number))\s*[:.]?\s*(\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z0-9]{2})\b', row, re.I):
+                    if not re.search(r'\b(?:branch|office|shipper|consignee|buyer|customer)\b', row[:match.start()], re.I):
+                        labelled.add(match[1].upper())
+            supplier_regs = labelled-printed_buyer_registrations(text)-printed_buyer_registrations(text, 'other')
+        if supplier_regs != {parsed['vendor_gstin']}:
+            raise Hold('Supplier registration is not uniquely evidenced by its printed role/registration labels.')
     supplier = ' '.join(re.findall(r'[A-Z0-9]+', str(parsed.get('vendor_name') or '').upper()))
     normalized = ' '.join(re.findall(r'[A-Z0-9]+', text.upper()))
     if not supplier or supplier not in normalized:
@@ -162,7 +176,8 @@ def corroborate_source(parsed, text, core):
         raise Hold('Invoice date is not evidenced in the PDF text.')
     labelled_dates = []
     generic_dates = []
-    for row in text.splitlines():
+    source_rows = text.splitlines()
+    for index, row in enumerate(source_rows):
         match = re.search(r'\binvoice\s+date\s*:?\s*(.+)', row, re.I)
         if match:
             labelled_dates.append(match[1].strip().upper())
@@ -181,6 +196,21 @@ def corroborate_source(parsed, text, core):
         if not due_rows or not all(any(value.startswith(d.upper()) for d in due_forms) for value in due_rows):
             raise Hold('The extracted due date is not evidenced by the printed payment deadline.')
     numbers = {Decimal(x.replace(',', '')) for x in re.findall(r'(?<![\w.])\d[\d,]*\.\d{2}(?!\d)', text)}
+    for index, row in enumerate(source_rows):
+        if re.match(r'^\s*(?:credit\s+note|credit\s+memo)\b', row, re.I):
+            raise Hold('A printed credit note requires review; nothing posted.')
+        label = re.search(r'\b(?:discount|adjustment|round[ -]*off|credit)\b', row, re.I)
+        if label:
+            values = re.findall(r'[-+]?\d[\d,]*\.\d{1,2}(?!\d)', row[label.end():])
+            immediate = re.match(r'\s*(?:\([A-Z]{3}\)|[A-Z]{3}|[₹$])?\s*[:=]?\s*([-+]?\d[\d,]*(?:\.\d{1,2})?)', row[label.end():])
+            if immediate:
+                values.append(immediate[1])
+            if re.fullmatch(r'\s*(?:discount|adjustment|round[ -]*off|credit)\s*(?:\([A-Z]{3}\))?\s*:?\s*', row, re.I):
+                following = next((value.strip() for value in source_rows[index+1:index+4] if value.strip()), '')
+                if re.fullmatch(r'[-+]?\d[\d,]*(?:\.\d{1,2})?\s*(?:[A-Z]{3})?', following):
+                    values.append(re.match(r'[-+]?\d[\d,]*(?:\.\d{1,2})?', following)[0])
+            if any(Decimal(value.replace(',', '')) for value in values):
+                raise Hold('Printed discount, credit or adjustment requires review even if extraction reports zero.')
     for key in MONEY:
         value = amount(parsed.get(key))
         if value and value not in numbers:
@@ -250,7 +280,29 @@ def corroborate_source(parsed, text, core):
                     heads[head.upper()].add(Decimal(value))
         if amount(line['rate']) not in bases:
             raise Hold('A charge taxable total differs on its own printed row.')
+        printed_codes = set()
+        printed_taxes = {'cgst': set(), 'sgst': set(), 'igst': set()}
+        for window in charge_windows:
+            for row in window.splitlines():
+                printed_codes.update(re.findall(r'\b(?:SAC|HSN)(?:/HSN|/SAC)?\s*[:.]?\s*(\d{4,8})\b', row, re.I))
+                if re.search(r'\b(?:SAC|HSN)\b', text, re.I) and pattern.search(row):
+                    printed_codes.update(re.findall(r'(?<![\d.,])\b\d{4,8}\b(?![\d.,])', row))
+                taxes = list(re.finditer(r'\b(CGST|SGST|IGST)\s*@?\s*\d+(?:\.\d+)?\s*%', row, re.I))
+                for index, tax in enumerate(taxes):
+                    end = taxes[index+1].start() if index+1 < len(taxes) else len(row)
+                    values = re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', row[tax.end():end])
+                    if cma:
+                        if len(values) < 2 or Decimal(values[-2].replace(',', '')) != amount(line['rate']):
+                            continue
+                        printed_codes.update(re.findall(r'(?<![\d.,])\b\d{4,8}\b(?![\d.,])', row[tax.end():end]))
+                    if values:
+                        printed_taxes[tax[1].lower()].add(Decimal(values[-1 if cma else 0].replace(',', '')))
         sac = str(line.get('hsn_or_sac') or '').strip()
+        if printed_codes and printed_codes != {sac}:
+            raise Hold('Printed SAC/HSN must be retained without omission or conflicting charge codes.')
+        for head, printed in printed_taxes.items():
+            if printed and (line.get(head) is None or printed != {amount(line[head])}):
+                raise Hold('Printed charge '+head.upper()+' amounts must be extracted and agree with their own source rows.')
         if sac and (not re.fullmatch(r'\d{4,8}', sac) or not any(re.search(r'(?<!\d)'+re.escape(sac)+r'(?!\d)', row) for row in charge_windows)):
             raise Hold('A charge SAC/HSN is not evidenced on its printed charge or tax rows.')
         rate = Decimal(str(line['tax_percentage']))
@@ -626,7 +678,10 @@ def verify_detail(core, bid, payload, parsed, detail, owned=True):
         old_get = core.zoho_get
         try:
             core.zoho_get = lambda endpoint, params=None: {'code': 0, 'bill': detail}
-            check = core.verify_created_bill(bid, expected, parsed)
+            try:
+                check = core.verify_created_bill(bid, expected, parsed)
+            except (ValueError, TypeError, KeyError, InvalidOperation) as exc:
+                raise ProviderError('Zoho read-back fields are incomplete; retained bill will be read again.', retryable=True) from exc
         finally:
             core.zoho_get = old_get
     for field in ('notes', 'reference_number', 'due_date') if owned else ():
@@ -640,27 +695,44 @@ def verify_detail(core, bid, payload, parsed, detail, owned=True):
         check['errors'].append('line_count_mismatch')
     for sent, saved, source in zip(payload['line_items'], detail.get('line_items', []), parsed['line_items']):
         for field in ('rate', 'quantity'):
-            if Decimal(str(saved.get(field))) != Decimal(str(sent[field])):
+            try:
+                value = Decimal(str(saved.get(field)))
+                if not value.is_finite():
+                    raise ValueError
+            except (ValueError, TypeError, InvalidOperation) as exc:
+                raise ProviderError('Zoho line '+field+' is incomplete; retained bill will be read again.', retryable=True) from exc
+            if value != Decimal(str(sent[field])):
                 check['errors'].append('line_'+field+'_mismatch')
         for field in ('description', 'account_id', 'hsn_or_sac'):
             if field in sent and str(saved.get(field) or '') != str(sent[field]):
                 check['errors'].append('line_'+field+'_mismatch')
-        if saved.get('tax_percentage') is not None and Decimal(str(saved['tax_percentage'])) != Decimal(str(source['tax_percentage'])):
-            check['errors'].append('line_tax_percentage_mismatch')
+        if saved.get('tax_percentage') is not None:
+            try:
+                percentage = Decimal(str(saved['tax_percentage']))
+                if not percentage.is_finite():
+                    raise ValueError
+            except (ValueError, TypeError, InvalidOperation) as exc:
+                raise ProviderError('Zoho line tax percentage is incomplete; retained bill will be read again.', retryable=True) from exc
+            if percentage != Decimal(str(source['tax_percentage'])):
+                check['errors'].append('line_tax_percentage_mismatch')
         # Zoho's documented line tax ID and bill-level component amounts are mandatory.
         # Inspect optional line amounts too when the service actually supplies them.
         if not payload.get('is_reverse_charge_applied') and 'line_item_taxes' in saved:
             heads = {'cgst': Decimal(0), 'sgst': Decimal(0), 'igst': Decimal(0)}
             taxes = saved['line_item_taxes']
             if not isinstance(taxes, list):
-                check['errors'].append('line_gst_details_invalid')
-                continue
+                raise ProviderError('Zoho line tax details are incomplete; retained bill will be read again.', retryable=True)
             for tax in taxes:
+                if not isinstance(tax, dict):
+                    raise ProviderError('Zoho line tax details are incomplete; retained bill will be read again.', retryable=True)
                 matching = [k for k in heads if k.upper() in str(tax.get('tax_name', '')).upper()]
                 if len(matching) != 1:
                     check['errors'].append('line_gst_head_unrecognized')
                 else:
-                    heads[matching[0]] += amount(tax.get('tax_amount'))
+                    try:
+                        heads[matching[0]] += amount(tax.get('tax_amount'))
+                    except Hold as exc:
+                        raise ProviderError('Zoho line tax amount is incomplete; retained bill will be read again.', retryable=True) from exc
             mode = core.determine_tax_route(parsed, parsed['vendor_name'], parsed.get('vendor_gstin'))['tax_mode']
             for head, actual in heads.items():
                 charged = (head == 'igst') == (mode == 'igst')
@@ -766,7 +838,7 @@ class Engine:
     def process(self, doc_id):
         with self.lock:
             job = self.read(doc_id)
-            if not job or job['status'] in TERMINAL:
+            if not job or (job['status'] in TERMINAL and not (job['status'] == 'validated' and os.environ.get('APP_AUTOMATION_POSTING') == '1')):
                 return
             if job.get('retry_at', 0) > time.time():
                 return

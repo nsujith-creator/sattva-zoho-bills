@@ -39,3 +39,8 @@ For extraction or posting changes, test representative cases:
 6. Retry after partial failure.
 
 Completion requires showing which cases passed, which fields were reconciled, and that no bill was posted without the required approval boundary.
+
+
+### Owner-approved duplicate penny allocation, 29 October 2026
+
+For duplicate verification only, the owner permits offsetting one-paise line allocations within the SAME GST head and rate when source bases, quantities, descriptions, SAC, vendor registration, tax IDs, every GST-head total and invoice total match exactly. Each line difference is at most one paise; each same-head/rate group must net to zero with complete line evidence. Cross-head/cross-rate offsets, larger differences, missing evidence or any total tolerance remain held. This does not authorize existing-bill edits or relax new-bill read-back. Preserve raw extraction evidence and separately record any PDF-derived reconciliation. Additional AI calls and deployment require their existing approvals.

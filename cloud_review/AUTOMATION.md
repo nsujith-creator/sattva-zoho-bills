@@ -22,6 +22,8 @@ Haiku4.5 standard published rates checked28 October2026: USD1/M input, USD5/M ou
 
 Tests: `python -m unittest discover -s cloud_review -p 'test_*.py' -v`. Offline tests use synthetic PDFs and fake providers; they do not establish live extraction accuracy or live Zoho acceptance. Those results must be recorded separately.
 
+A printed Due Date/Payable By label cannot be silently omitted by both readings; it holds before creation. Supplied deadlines retain the existing exact source/payload/read-back checks. CR/DR-formatted CMA amounts hold alongside signed and bracketed values. Qualifying NEW domestic payloads explicitly request item-level tax calculation after strict per-line arithmetic is proved; duplicate verification retains its independently selected mode. Restart and validated resume reconstruct that same NEW payload before persisted-intent comparison.
+
 
 ## Owner deployment packaging
 
@@ -31,4 +33,15 @@ The two already-approved originals and their private expectations live in `/data
 
 This packaging correction does not change the reviewed parser, accounting validation, duplicate handling, provider budgets, owner authentication, original expiry or Windows program/cache. The previously failed oversized apply must first be cleared through Railway's supported recovery path; do not retry that payload or confuse redeploying the old image with deploying the repaired source.
 
-Independent review corrections require complete retained case evidence before a passed receipt can enable posting on restart. Original BLOBs, job identities/fingerprints, both complete readings, source corroboration and exact full existing-record checks are verified. Missing approved intents can be restored without overwriting conflicting review data. Invalid passed proof stops before worker construction. Normal valid restart reuses its complete retained evidence without provider calls. The failed oversized apply has cleared; a new minimal deployment still requires final approval and live proof.
+Independent review corrections require complete retained case evidence before a passed receipt can enable posting on restart. Original BLOBs, job identities/fingerprints, both complete readings, source corroboration and exact full existing-record checks are verified. Missing or conflicting approved intents hold without restoration. Invalid passed proof stops before worker construction. Normal valid restart reuses its complete retained evidence without provider calls. The failed oversized apply has cleared; a new minimal deployment still requires final approval and live proof.
+
+
+## Printed tax reconciliation and retained acceptance repair
+
+Raw Haiku results remain in parsed/source_check unchanged. A separate reconciled_parsed is derived only from unique labelled CMA GST rows matched by printed SAC and taxable base; repeated/missing rows, signed/credit amounts and reuse of one tax row for two charges hold. Both derived readings must independently pass existing PDF corroboration and agree. Only the same printed CMA principal qualified C/O CCAI can normalize after both original names and the same supplier GSTIN pass source proof. Other discrepancies remain held.
+
+Domestic validation selects the documented is_item_level_tax_calc mode only when every printed GST head and grand total agree exactly with its arithmetic. If aggregate item/group totals match but per-rate allocations differ, item calculation preserves line proof; cross-rate cancellation cannot silently choose group allocation. The legacy reconciler continues to reject tax-ID, source-base and structural errors; only explicit financial-calculation differences can be evaluated by the alternate exact mode. No Windows/core mapping or source is changed.
+
+The owner's 29 October duplicate-only one-paise same-head/rate net-zero rule requires explicit charged-head evidence on every line and retains all identity/base/quantity/code/header checks. Newly created bills retain strict per-line read-back. A NEW group-rounded bill whose exact charge allocation lacks proof remains held before creation; recognizing its arithmetic does not silently approve an allocation. This is a remaining coverage limitation, not universal automatic posting.
+
+The repair owner launcher requires both retained originals and both raw readings before worker construction. It creates a private fsynced backup of prior jobs and receipt, then rechecks only those existing records without model calls or financial writes. A passed receipt binds raw readings, derived reading, PDF, job and release; restart re-derives the printed checks without inference. Missing readings/intent, previous create attempt, conflicting payload or record changes hold posting. This new release needs source review and deployment approval. Existing cost allowance and expiry remain unchanged.

@@ -108,6 +108,18 @@ class RoundingRepair(unittest.TestCase):
         with self.assertRaisesRegex(a.Hold,'before creation'):
             a.validate(parsed,self.core,self.vendors)
 
+    def test_cross_rate_rounding_cancellation_selects_safe_item_mode(self):
+        parsed=self.parsed(bases=('100.04','100.04','100.20','100.20'),
+                           rates=('18','18','5','5'),cgst='23.02')
+        for line,tax in zip(parsed['line_items'],('9.00','9.00','2.51','2.51')):
+            line.update(cgst=tax,sgst=tax)
+        payload=a.validate(copy.deepcopy(parsed),self.core,self.vendors)
+        self.assertIs(payload['is_item_level_tax_calc'],True)
+        # A cancelled aggregate never grants a new line-allocation waiver.
+        parsed['line_items'][0]['cgst']='9.01'
+        parsed['line_items'][1]['cgst']='8.99'
+        with self.assertRaises(a.Hold):a.validate(parsed,self.core,self.vendors)
+
     def test_calculation_mode_cannot_bypass_an_incorrect_tax_id(self):
         parsed=self.parsed(bases=('100.04','100.04'),cgst='18.01')
         original=self.core.build_payload
@@ -151,6 +163,19 @@ class RoundingRepair(unittest.TestCase):
                 changed=text.replace('100.00 9.00','100.00 '+signed)
                 with self.assertRaisesRegex(a.Hold,'Signed or credit'):
                     a.reconcile_readings(parsed,other,changed,self.core)
+
+    def test_one_printed_tax_pair_cannot_correct_two_distinct_charges(self):
+        parsed,text=self.cma()
+        parsed['line_items'].append(dict(parsed['line_items'][0],description='Handling'))
+        parsed.update(subtotal='200.00',tax_amount_cgst='18.00',tax_amount_sgst='18.00',invoice_total='236.00')
+        for line in parsed['line_items']:line.update(cgst='8.99',sgst='8.99')
+        text=text.replace('Documentation    100.00','Documentation    100.00\nHandling    100.00')
+        text=text.replace('Subtotal 100.00','Subtotal 200.00').replace('\nCGST 9.00\n','\nCGST 18.00\n').replace('\nSGST 9.00\n','\nSGST 18.00\n').replace('Grand Total 118.00','Grand Total 236.00')
+        corrected=copy.deepcopy(parsed)
+        for line in corrected['line_items']:line.update(cgst='9.00',sgst='9.00')
+        self.assertTrue(a.corroborate_source(corrected,text,self.core))
+        with self.assertRaisesRegex(a.Hold,'more than one charge'):
+            a.reconcile_readings(parsed,copy.deepcopy(parsed),text,self.core)
 
     def test_unrelated_disagreement_or_bad_confidence_still_holds(self):
         first,text=self.cma()

@@ -201,6 +201,7 @@ def rebuild_payload(parsed, case, doc_id, client, automation, core):
 
 def retained_case_jobs(folder, cases, automation):
     retained = []
+    core = automation.load_core()
     with contextlib.closing(sqlite3.connect(folder / 'review.sqlite3')) as db:
         for case in cases:
             doc_id = retained_original(db, case)
@@ -216,6 +217,13 @@ def retained_case_jobs(folder, cases, automation):
                            or reading.get('multi_invoice_count') != 1
                            for reading in (job.get('parsed'), job.get('source_check')))):
                 raise RuntimeError('Complete safe retained readings required; no extra extraction authorized')
+            # Check mandatory fields and printed evidence too, before a Server can
+            # start a worker. Quality flags alone do not establish completeness.
+            try:
+                automation.reconcile_readings(job['parsed'], job['source_check'],
+                                              automation.source_text(case['pdf']), core)
+            except Exception as exc:
+                raise RuntimeError('Retained source readings are incomplete or unsupported; no worker started') from exc
             saved = db.execute('SELECT payload_json FROM suggestions WHERE invoice_id=?', (doc_id,)).fetchone()
             intent = {'kind': 'automatic_upload_intent', 'policy': automation.POLICY,
                       'id': doc_id, 'pdf_sha256': case['sha256']}

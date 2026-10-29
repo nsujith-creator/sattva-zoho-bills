@@ -174,7 +174,8 @@ class OwnerPackaging(unittest.TestCase):
                     'total': '118.00', 'line_items': [{'rate': '100.00', 'quantity': '1'}]}
         def reconcile(first, second, text, core):
             complete = lambda v: isinstance(v,dict) and v.get('confidence')=='high' and v.get('issues')==[] and v.get('multi_invoice_count')==1
-            if not complete(first) or not complete(second) or first != second:
+            if (not complete(first) or not complete(second) or first != second
+                    or any(not first.get(key) for key in ('invoice_number','total'))):
                 raise RuntimeError('Synthetic reading mismatch')
             digest = lambda v: hashlib.sha256(json.dumps(v,sort_keys=True).encode()).hexdigest()
             return copy.deepcopy(first), {'matched':True,'raw_reading_sha256':[digest(first),digest(second)]}
@@ -329,6 +330,29 @@ class OwnerPackaging(unittest.TestCase):
             path.write_text(json.dumps(job))
             self.assertFalse(all(start.reading_checks(cases[0],job,automation).values()))
             with self.assertRaises(RuntimeError): self.accepted(cases,digest,automation)
+
+    def test_missing_mandatory_fields_or_source_proof_stop_before_worker(self):
+        cases,digest,engine,app,automation,calls = self.runtime()
+        path=engine.folder/(cases[0]['sha256'][:32]+'.json')
+        original=json.loads(path.read_text())
+        fake_app=types.SimpleNamespace(automation_enabled=lambda: True,Server=Mock(),main=Mock())
+        def prepare():
+            os.environ['APP_AUTOMATION_POSTING']='0'
+            return self.folder,self.release,{}
+        for failure in ('missing_fields','unreadable_source'):
+            job=copy.deepcopy(original)
+            if failure=='missing_fields':
+                for label in ('parsed','source_check'):job[label].pop('invoice_number')
+            path.write_text(json.dumps(job))
+            source=patch.object(automation,'source_text',side_effect=RuntimeError('Synthetic unavailable PDF text')) if failure=='unreadable_source' else contextlib.nullcontext()
+            with patch.dict(sys.modules,{'app':fake_app,'automation':automation}), \
+                    patch.object(start,'prepare_owner',side_effect=prepare), \
+                    patch.object(start,'load_cases',return_value=(cases,digest)), \
+                    source,contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError,'source readings'):start.main()
+            self.assertEqual(os.environ['APP_AUTOMATION_POSTING'],'0')
+        fake_app.main.assert_not_called();fake_app.Server.assert_not_called()
+        self.assertEqual(calls,[])
 
     def test_conflicting_existing_review_intent_is_preserved_and_holds(self):
         runtime = self.runtime()

@@ -614,8 +614,12 @@ def reconcile_readings(first, second, text, core):
             raise Hold('The two source readings disagree or are incomplete; no bill posted.')
         parsed = copy.deepcopy(raw)
         if core.is_cma_cgm_invoice(parsed.get('vendor_name'), text):
+            consumed_rows = set()
             for index, line in enumerate(parsed.get('line_items', [])):
                 for head, proof in cma_printed_charge_taxes(line, text).items():
+                    if proof['row_sha256'] in consumed_rows:
+                        raise Hold('One printed CMA tax row cannot prove more than one charge.')
+                    consumed_rows.add(proof['row_sha256'])
                     if line.get(head) is None or amount(line[head]) != amount(proof['amount']):
                         corrections.append({'reading': label, 'line': index, 'field': head,
                                             'raw': line.get(head), 'printed': proof['amount'],
@@ -658,13 +662,16 @@ def select_tax_calculation(parsed, payload, route, legacy):
         base = amount(sent['rate']) * amount(sent['quantity'])
         rate = Decimal(str(source['tax_percentage']))
         key = sent['tax_id']
-        item = grouped.setdefault(key, [Decimal(0), rate])
+        item = grouped.setdefault(key, [Decimal(0), rate, Decimal(0)])
         if item[1] != rate:
             raise Hold('One tax ID maps to conflicting printed rates.')
         item[0] += base
-        line_head += (base*rate/100/factor).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
-    group_head = sum((base*rate/100/factor).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
-                     for base, rate in grouped.values())
+        per_line = (base*rate/100/factor).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+        line_head += per_line
+        item[2] += per_line
+    group_values = [((base*rate/100/factor).quantize(Decimal('.01'), rounding=ROUND_HALF_UP), line_sum)
+                    for base, rate, line_sum in grouped.values()]
+    group_head = sum(value for value, _ in group_values)
     fields = ('tax_amount_cgst', 'tax_amount_sgst') if factor == 2 else ('tax_amount_igst',)
     unused = ('tax_amount_igst',) if factor == 2 else ('tax_amount_cgst', 'tax_amount_sgst')
     if any(amount(parsed[key]) for key in unused):
@@ -673,8 +680,10 @@ def select_tax_calculation(parsed, payload, route, legacy):
     item_matches = all(amount(parsed[key]) == line_head for key in fields)
     if not (group_matches or item_matches):
         raise Hold('Neither supported tax-calculation mode matches the printed GST heads exactly.')
-    # Prefer the existing bill/group behavior where both calculations agree.
-    payload['is_item_level_tax_calc'] = not group_matches
+    # Global equality can mask offsets across rates. When both modes match the
+    # heads but individual groups differ, item calculation preserves line proof.
+    groups_preserve_lines = all(value == line_sum for value, line_sum in group_values)
+    payload['is_item_level_tax_calc'] = not group_matches or (item_matches and not groups_preserve_lines)
     return 'item' if payload['is_item_level_tax_calc'] else 'group'
 
 

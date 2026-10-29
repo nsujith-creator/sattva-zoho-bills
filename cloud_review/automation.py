@@ -189,11 +189,14 @@ def corroborate_source(parsed, text, core):
     candidates = labelled_dates or generic_dates[:1]
     if not candidates or not all(any(value.startswith(d.upper()) for d in dates) for value in candidates):
         raise Hold('The labelled invoice date differs from the extracted date.')
+    due_labels = [m[1].strip().upper() for row in text.splitlines()
+                  if (m := re.search(r'\b(?:due[ \t]+date|payable[ \t]+by)\b[ \t]*:?[ \t]*(.*)', row, re.I))]
+    if due_labels and not parsed.get('due_date'):
+        raise Hold('A printed due date was omitted by the source readings; nothing posted.')
     if parsed.get('due_date') is not None:
         due_forms = printed_date_forms(parsed['due_date'])
-        due_rows = [m[1].strip().upper() for row in text.splitlines()
-                    if (m := re.search(r'\b(?:due\s+date|payable\s+by)\s*:?\s*(.+)', row, re.I))
-                    and re.match(r'(?:\d|Jan\b|Feb\b|Mar\b|Apr\b|May\b|Jun\b|Jul\b|Aug\b|Sep\b|Oct\b|Nov\b|Dec\b)', m[1].strip(), re.I)]
+        due_rows = [value for value in due_labels
+                    if re.match(r'(?:\d|Jan\b|Feb\b|Mar\b|Apr\b|May\b|Jun\b|Jul\b|Aug\b|Sep\b|Oct\b|Nov\b|Dec\b)', value, re.I)]
         if not due_rows or not all(any(value.startswith(d.upper()) for d in due_forms) for value in due_rows):
             raise Hold('The extracted due date is not evidenced by the printed payment deadline.')
     numbers = {Decimal(x.replace(',', '')) for x in re.findall(r'(?<![\w.])\d[\d,]*\.\d{2}(?!\d)', text)}
@@ -588,7 +591,8 @@ def cma_printed_charge_taxes(line, text):
         signed = r'[-+−]\s*'+currency+r'\d[\d,]*\.\d{2}'
         brackets = r'\(\s*'+currency+r'\d[\d,]*\.\d{2}\s*\)'
         trailing = r'\d[\d,]*\.\d{2}\s*[-+−](?:\s|$)'
-        if re.search('|'.join((signed, brackets, trailing)), tail, re.I):
+        credit_marker = r'(?:\b(?:CR|DR)\s*\d[\d,]*\.\d{2}|\d[\d,]*\.\d{2}\s*(?:CR|DR)\b)'
+        if re.search('|'.join((signed, brackets, trailing, credit_marker)), tail, re.I):
             raise Hold('Signed or credit-formatted CMA tax rows require review; no amount was substituted.')
         head = labels[0][1].lower()
         if head in found:
@@ -773,6 +777,8 @@ def validate(parsed, core, vendors, check_zoho_rounding=True):
                 # New creation has no permission to alter a printed charge-tax amount.
                 if (not charged and amount(line[field])) or (check_zoho_rounding and amount(line[field]) != expected):
                     raise Hold('Printed line '+field.upper()+' needs exact allocation review before new creation.')
+    if check_zoho_rounding and not route['is_overseas']:
+        payload['is_item_level_tax_calc'] = True  # Exact per-line arithmetic was proved above.
     return payload
 
 
@@ -1028,12 +1034,14 @@ class Engine:
                         vendors[name] = entry
                 payload = validate(parsed, core, vendors, check_zoho_rounding=False)
                 marker = 'Sattva source SHA256 '+row[1]+'; upload '+doc_id
-                payload['notes'] = str(payload.get('notes') or '')+'\n'+marker
-                if job.get('payload') and payload != job['payload']:
-                    raise Hold('Supplier or proposed bill changed after the previous attempt.')
                 # Persisted create_attempted survives an explicit retry or a missing response.
                 recovering = bool(job.get('bill_id') or job.get('create_attempted') or job.get('resume_from') in ('posting', 'created', 'attaching', 'reconcile_pending'))
                 existing = {'bill_id': job['bill_id']} if job.get('bill_id') else zoho.find(payload['vendor_id'], payload['bill_number'])
+                if recovering or not existing:
+                    payload = validate(parsed, core, vendors)
+                payload['notes'] = str(payload.get('notes') or '')+'\n'+marker
+                if job.get('payload') and payload != job['payload']:
+                    raise Hold('Supplier or proposed bill changed after the previous attempt.')
                 if existing:
                     bid = str(existing['bill_id'])
                     if not bid.isdigit():
@@ -1053,7 +1061,6 @@ class Engine:
                 elif recovering:
                     raise ProviderError('Previous creation outcome is uncertain. No second bill will be created; retry only looks for the original result.', retryable=True)
                 else:
-                    validate(parsed, core, vendors)
                     if os.environ.get('APP_AUTOMATION_POSTING') != '1':
                         self.save(job, 'validated', payload=payload, message='Source text and proposed bill match. Live posting acceptance is not enabled yet.')
                         return

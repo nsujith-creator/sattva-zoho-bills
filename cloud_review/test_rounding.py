@@ -158,7 +158,8 @@ class RoundingRepair(unittest.TestCase):
 
     def test_signed_or_credit_tax_values_never_become_positive_corrections(self):
         parsed,text=self.cma();other=copy.deepcopy(parsed)
-        for signed in ('-9.00','−9.00','- 9.00','-INR 9.00','(9.00)','(INR 9.00)','9.00-', '+9.00'):
+        for signed in ('-9.00','−9.00','- 9.00','-INR 9.00','(9.00)','(INR 9.00)','9.00-', '+9.00',
+                       '9.00 CR','9.00 DR','9.00cr','CR 9.00','DR9.00'):
             with self.subTest(signed=signed):
                 changed=text.replace('100.00 9.00','100.00 '+signed)
                 with self.assertRaisesRegex(a.Hold,'Signed or credit'):

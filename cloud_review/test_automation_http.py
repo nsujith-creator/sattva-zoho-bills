@@ -56,10 +56,11 @@ class UploadJourney(unittest.TestCase):
                 self.assertIn(b'Drop a vendor bill here',body)
                 upload_headers={'Cookie':cookie,'X-CSRF-Token':csrf,'Content-Type':'application/pdf','X-Filename':'synthetic.pdf'}
                 self.assertEqual(200,request('GET','/healthz')[0])
-                engine.worker_error='SyntheticFailure'
-                self.assertEqual(503,request('GET','/healthz')[0])
-                self.assertIn(b'Processing is temporarily unavailable',request('GET','/',headers={'Cookie':cookie})[2])
-                engine.worker_error=None
+                # Keep the synthetic unavailable state stable across both HTTP reads;
+                # the real worker can recover/clear worker_error between requests.
+                with patch.object(engine,'healthy',return_value=False):
+                    self.assertEqual(503,request('GET','/healthz')[0])
+                    self.assertIn(b'Processing is temporarily unavailable',request('GET','/',headers={'Cookie':cookie})[2])
                 oversized={**upload_headers,'Content-Length':str(a.MAX_PDF+1)}
                 self.assertEqual(413,request('POST','/api/invoices',PDF,oversized)[0])
                 self.assertEqual(0,ai.calls)

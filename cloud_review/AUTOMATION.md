@@ -22,6 +22,8 @@ Haiku4.5 standard published rates checked28 October2026: USD1/M input, USD5/M ou
 
 Tests: `python -m unittest discover -s cloud_review -p 'test_*.py' -v`. Offline tests use synthetic PDFs and fake providers; they do not establish live extraction accuracy or live Zoho acceptance. Those results must be recorded separately.
 
+A printed Due Date/Payable By label cannot be silently omitted by both readings; it holds before creation. Supplied deadlines retain the existing exact source/payload/read-back checks. CR/DR-formatted CMA amounts hold alongside signed and bracketed values. Qualifying NEW domestic payloads explicitly request item-level tax calculation after strict per-line arithmetic is proved; duplicate verification retains its independently selected mode. Restart and validated resume reconstruct that same NEW payload before persisted-intent comparison.
+
 
 ## Owner deployment packaging
 

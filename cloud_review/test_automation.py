@@ -128,6 +128,31 @@ class CloudAutomationTests(unittest.TestCase):
         with patch.dict(os.environ, {'APP_AUTOMATION_POSTING':'0'}):
             self.assertEqual('validated',self.process()['status'])
         self.assertEqual(0,self.zoho.posts)
+
+    def test_printed_due_date_missed_twice_never_creates(self):
+        self.engine.source_reader=lambda pdf:source_fixture()+'Due Date: 2026-11-27\n'
+        job=self.process()
+        self.assertEqual('needs_review',job['status'])
+        self.assertIn('due date',job['message'])
+        self.assertEqual((2,0,0),(self.ai.calls,self.zoho.posts,self.zoho.attachments))
+
+    def test_printed_due_date_is_preserved_in_new_bill_and_readback(self):
+        self.ai.parsed['due_date']='2026-11-27'
+        self.engine.source_reader=lambda pdf:source_fixture()+'Due Date: 2026-11-27\n'
+        job=self.process()
+        self.assertEqual('verified',job['status'])
+        self.assertEqual('2026-11-27',job['payload']['due_date'])
+        self.assertEqual('2026-11-27',self.zoho.bill['due_date'])
+        self.assertEqual((2,1,1),(self.ai.calls,self.zoho.posts,self.zoho.attachments))
+
+    def test_new_item_calculation_survives_validated_resume(self):
+        with patch.dict(os.environ,{'APP_AUTOMATION_POSTING':'0'}):job=self.process()
+        self.assertEqual('validated',job['status'])
+        self.assertIs(job['payload']['is_item_level_tax_calc'],True)
+        job=self.process()
+        self.assertEqual('verified',job['status'])
+        self.assertIs(job['payload']['is_item_level_tax_calc'],True)
+        self.assertEqual((2,1,1),(self.ai.calls,self.zoho.posts,self.zoho.attachments))
     def test_existing_invoice_never_creates_or_changes_bill(self):
         payload = a.validate(invoice(), self.core, {'SYNTHETIC FREIGHT VENDOR':{'id':'123','gst_no':GSTIN}})
         self.zoho.bill = {**payload, 'bill_id':'999', 'sub_total':100, 'tax_total':18, 'total':118,

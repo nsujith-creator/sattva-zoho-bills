@@ -98,6 +98,14 @@ class SourceText(unittest.TestCase):
     def test_due_date_requires_its_own_printed_deadline(self):
         parsed=invoice();parsed['due_date']='2030-01-01'
         with self.assertRaises(a.Hold):a.corroborate_source(parsed,source_fixture()+'Due Date 2026-11-28\n',core_fixture())
+
+    def test_printed_due_label_cannot_be_omitted_by_both_readings(self):
+        for label in ('Due Date: 2026-11-27','Payable by 27-Nov-2026','Due Date:\n2026-11-27'):
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(a.Hold,'due date'):
+                    a.reconcile_readings(invoice(),invoice(),source_fixture()+label+'\n',core_fixture())
+        parsed=invoice();parsed['due_date']='2026-11-27'
+        a.corroborate_source(parsed,source_fixture()+'Due Date: 2026-11-27\n',core_fixture())
         parsed['due_date']='2026-11-28'
         a.corroborate_source(parsed,source_fixture()+'Due Date 2026-11-28\n',core_fixture())
         with self.assertRaises(a.Hold):a.corroborate_source(parsed,source_fixture(),core_fixture())

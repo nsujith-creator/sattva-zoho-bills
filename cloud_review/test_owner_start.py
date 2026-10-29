@@ -122,15 +122,23 @@ class OwnerPackaging(unittest.TestCase):
                             'status': 'duplicate', 'bill_id': case['bill_id'],
                             'parsed': parsed, 'source_check': copy.deepcopy(parsed),
                             'verification': {'ok': True, 'errors': []}, 'source_evidence': {'matched': True}}
+        with contextlib.closing(sqlite3.connect(db)) as conn, conn:
+            for case in cases:
+                doc_id = case['sha256'][:32]
+                conn.execute('INSERT INTO invoices VALUES(?,?,?,?,?)',
+                             (doc_id, case['filename'], case['sha256'], 'synthetic', case['pdf']))
+                intent = {'kind':'automatic_upload_intent','policy':'synthetic-policy','id':doc_id,'pdf_sha256':case['sha256']}
+                conn.execute('INSERT INTO suggestions VALUES(?,?,?)', (doc_id,json.dumps(intent),'synthetic'))
         first_id = cases[0]['sha256'][:32]
         if failure == 'wrong_bill': jobs[first_id]['bill_id'] = '999'
         if failure == 'wrong_total': jobs[first_id]['parsed']['total'] = '117.99'
         if failure == 'missing_reading': jobs[first_id].pop('source_check')
         if failure == 'empty_reading': jobs[first_id]['source_check'] = {}
         if failure == 'second_wrong_total': jobs[first_id]['source_check']['total'] = '117.99'
-        if failure == 'held': jobs[first_id]['status'] = 'needs_review'
+        if failure == 'unsafe_stage': jobs[first_id]['status'] = 'posting'
+        if failure == 'create_attempted': jobs[first_id]['create_attempted'] = True
         if failure == 'wrong_source': jobs[first_id]['pdf_sha256'] = 'f' * 64
-        if failure == 'missing_worker_verification': jobs[first_id].pop('verification')
+        if failure == 'old_verification_missing': jobs[first_id].pop('verification')
         if failure == 'conflicting_payload': jobs[first_id]['payload'] = {'bill_number': 'CONFLICT'}
         state = self.folder / 'automation'; state.mkdir(exist_ok=True)
         for key, job in jobs.items(): (state / (key + '.json')).write_text(json.dumps(job))
@@ -164,10 +172,17 @@ class OwnerPackaging(unittest.TestCase):
             self.assertFalse(check_zoho_rounding)
             return {'bill_number': parsed['invoice_number'], 'vendor_id': '7',
                     'total': '118.00', 'line_items': [{'rate': '100.00', 'quantity': '1'}]}
+        def reconcile(first, second, text, core):
+            complete = lambda v: isinstance(v,dict) and v.get('confidence')=='high' and v.get('issues')==[] and v.get('multi_invoice_count')==1
+            if not complete(first) or not complete(second) or first != second:
+                raise RuntimeError('Synthetic reading mismatch')
+            digest = lambda v: hashlib.sha256(json.dumps(v,sort_keys=True).encode()).hexdigest()
+            return copy.deepcopy(first), {'matched':True,'raw_reading_sha256':[digest(first),digest(second)]}
         client = types.SimpleNamespace(call=call, all=lambda *args: [
             {'contact_name': 'SYNTHETIC', 'contact_id': '7', 'gst_no': 'synthetic'}])
         automation = types.SimpleNamespace(Zoho=lambda: client, MONEY={'total'}, validate=validate,
                                            POLICY='synthetic-policy', TERMINAL={'duplicate', 'needs_review'}, atomic=atomic,
+                                           reconcile_readings=reconcile, source_text=lambda pdf:'synthetic text',
                                            source_signature=lambda reading: json.dumps(reading, sort_keys=True),
                                            load_core=lambda: object(), verify_detail=verify,
                                            corroborate_source=lambda parsed, text, core: {'matched': True})
@@ -204,7 +219,7 @@ class OwnerPackaging(unittest.TestCase):
             self.assertEqual(db.execute('SELECT count(*) FROM invoices').fetchone()[0], 2)
 
     def test_mismatch_missing_reading_hold_and_read_failure_keep_posting_off(self):
-        for failure in ('wrong_bill', 'wrong_total', 'missing_reading', 'empty_reading', 'second_wrong_total', 'held', 'record_changed', 'read_error', 'empty_record', 'missing_record_total', 'nonfinite_record_total', 'wrong_source', 'missing_worker_verification', 'conflicting_payload', 'validation_hold', 'readback_mismatch'):
+        for failure in ('wrong_bill', 'wrong_total', 'missing_reading', 'empty_reading', 'second_wrong_total', 'unsafe_stage', 'record_changed', 'read_error', 'empty_record', 'missing_record_total', 'nonfinite_record_total', 'wrong_source', 'create_attempted', 'conflicting_payload', 'validation_hold', 'readback_mismatch'):
             with self.subTest(failure=failure):
                 db = self.folder / 'review.sqlite3'
                 if db.exists(): db.unlink()
@@ -237,25 +252,71 @@ class OwnerPackaging(unittest.TestCase):
         self.assertFalse(self.run_checks(runtime))
         self.assertEqual(os.environ['APP_AUTOMATION_POSTING'], '0')
 
-    def test_existing_approved_rows_receive_missing_intents(self):
+    def test_missing_approved_intent_holds_without_recreating_it(self):
         runtime = self.runtime()
-        cases, digest, engine, app, automation, calls = runtime
         with contextlib.closing(sqlite3.connect(self.folder / 'review.sqlite3')) as db, db:
-            for case in cases:
-                db.execute('INSERT INTO invoices VALUES(?,?,?,?,?)',
-                           (case['sha256'][:32], case['filename'], case['sha256'], 'synthetic', case['pdf']))
-        self.assertTrue(self.run_checks(runtime))
+            db.execute('DELETE FROM suggestions')
+        self.assertFalse(self.run_checks(runtime))
         with contextlib.closing(sqlite3.connect(self.folder / 'review.sqlite3')) as db:
-            self.assertEqual(db.execute('SELECT count(*) FROM suggestions').fetchone()[0], 2)
+            self.assertEqual(db.execute('SELECT count(*) FROM suggestions').fetchone()[0], 0)
+
+    def test_held_complete_readings_are_rechecked_without_provider_calls(self):
+        runtime = self.runtime('old_verification_missing')
+        cases,digest,engine,app,automation,calls=runtime
+        for case in cases:engine.read(case['sha256'][:32])['status']='needs_review'
+        for case in cases:
+            job=engine.read(case['sha256'][:32])
+            (engine.folder/(job['id']+'.json')).write_text(json.dumps(job))
+        original = {case['sha256'][:32]: copy.deepcopy(engine.read(case['sha256'][:32])) for case in cases}
+        self.assertTrue(self.run_checks(runtime))
+        backup = self.folder/('acceptance-jobs-before-'+self.release+'.json')
+        self.assertEqual(json.loads(backup.read_text())['jobs'], original)
+        backup_bytes = backup.read_bytes()
+        for case in cases:
+            job=engine.read(case['sha256'][:32])
+            self.assertTrue(job['acceptance_rechecked_from_retained'])
+            prior = original[case['sha256'][:32]]
+            self.assertEqual(job['parsed'],prior['parsed'])
+            self.assertEqual(job['source_check'],prior['source_check'])
+        self.assertTrue(self.run_checks(runtime))
+        self.assertEqual(backup.read_bytes(), backup_bytes)
+
+    def test_missing_reading_stops_before_worker_construction(self):
+        cases,digest,engine,app,automation,calls = self.runtime('missing_reading')
+        fake_app = types.SimpleNamespace(automation_enabled=lambda: True, Server=Mock(), main=Mock())
+        def prepare():
+            os.environ['APP_AUTOMATION_POSTING'] = '0'
+            return self.folder, self.release, {}
+        with patch.dict(sys.modules, {'app': fake_app, 'automation': automation}), \
+                patch.object(start, 'prepare_owner', side_effect=prepare), \
+                patch.object(start, 'load_cases', return_value=(cases, digest)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, 'retained readings'): start.main()
+        self.assertEqual(os.environ['APP_AUTOMATION_POSTING'], '0')
+        fake_app.main.assert_not_called(); fake_app.Server.assert_not_called()
+        self.assertEqual(calls, [])
+
+    def test_changed_canonical_result_or_raw_hash_cannot_reuse_passed_receipt(self):
+        runtime = self.runtime()
+        self.assertTrue(self.run_checks(runtime))
+        cases,digest,engine,app,automation,calls = runtime
+        path = engine.folder/(cases[0]['sha256'][:32]+'.json')
+        original = json.loads(path.read_text())
+        for field in ('canonical', 'raw_hash'):
+            job = copy.deepcopy(original)
+            if field == 'canonical': job['reconciled_parsed']['total'] = '119.00'
+            else: job['source_evidence']['raw_reading_sha256'][0] = 'f'*64
+            path.write_text(json.dumps(job))
+            self.assertFalse(all(start.reading_checks(cases[0],job,automation).values()))
+            with self.assertRaises(RuntimeError): self.accepted(cases,digest,automation)
 
     def test_conflicting_existing_review_intent_is_preserved_and_holds(self):
         runtime = self.runtime()
         cases, digest, engine, app, automation, calls = runtime
         with contextlib.closing(sqlite3.connect(self.folder / 'review.sqlite3')) as db, db:
             case = cases[0]
-            db.execute('INSERT INTO invoices VALUES(?,?,?,?,?)',
-                       (case['sha256'][:32], case['filename'], case['sha256'], 'synthetic', case['pdf']))
-            db.execute('INSERT INTO suggestions VALUES(?,?,?)', (case['sha256'][:32], '{"kind":"manual"}', 'synthetic'))
+            db.execute('UPDATE suggestions SET payload_json=? WHERE invoice_id=?',
+                       ('{"kind":"manual"}',case['sha256'][:32]))
         self.assertFalse(self.run_checks(runtime))
         with contextlib.closing(sqlite3.connect(self.folder / 'review.sqlite3')) as db:
             self.assertEqual(db.execute('SELECT payload_json FROM suggestions').fetchone()[0], '{"kind":"manual"}')
@@ -318,6 +379,8 @@ class OwnerPackaging(unittest.TestCase):
             for case in cases:
                 db.execute('INSERT INTO invoices VALUES(?,?,?,?,?)',
                            (case['sha256'][:32], case['filename'], case['sha256'], 'synthetic', case['pdf']))
+                intent={'kind':'automatic_upload_intent','policy':actual.POLICY,'id':case['sha256'][:32],'pdf_sha256':case['sha256']}
+                db.execute('INSERT INTO suggestions VALUES(?,?,?)',(case['sha256'][:32],json.dumps(intent),'synthetic'))
         stats = {'ai': 0, 'creates': 0, 'attachments': 0}
         def extract(pdf, second=False):
             stats['ai'] += 1
@@ -337,7 +400,8 @@ class OwnerPackaging(unittest.TestCase):
             source_reader=lambda pdf: source_fixture().replace('SYNTHETIC-001', parsed_by_pdf[pdf]['bill_number']))
         self.addCleanup(engine.close)
         os.environ['APP_AUTOMATION_POSTING'] = '0'
-        with patch('urllib.request.urlopen', side_effect=AssertionError('Network forbidden')):
+        with patch('urllib.request.urlopen', side_effect=AssertionError('Network forbidden')), \
+                patch.object(actual,'source_text',side_effect=engine.source_reader):
             for case in cases:
                 doc_id = case['sha256'][:32]
                 engine.enqueue(doc_id); engine.process(doc_id)

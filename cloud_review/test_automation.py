@@ -225,12 +225,12 @@ class CloudAutomationTests(unittest.TestCase):
         self.assertEqual('needs_review',job['status'])
         self.assertIn('line_cgst_mismatch',job['verification']['errors'])
         self.assertIn('line_sgst_mismatch',job['verification']['errors'])
-    def test_pre_create_tax_group_rounding_disagreement_is_held(self):
+    def test_exact_line_rounding_selects_documented_item_calculation(self):
         p=invoice()
         p['line_items']=[{'description':'Documentation','quantity':1,'rate':'0.06','tax_percentage':18}]*2
         p.update(subtotal='0.12',tax_amount_cgst='0.02',tax_amount_sgst='0.02',invoice_total='0.16')
-        with self.assertRaisesRegex(a.Hold,'tax-group rounding'):
-            a.validate(p,self.core,{'SYNTHETIC FREIGHT VENDOR':{'id':'123','gst_no':GSTIN}})
+        payload=a.validate(p,self.core,{'SYNTHETIC FREIGHT VENDOR':{'id':'123','gst_no':GSTIN}})
+        self.assertIs(payload['is_item_level_tax_calc'], True)
     def test_second_worker_cannot_share_the_posting_state(self):
         with self.assertRaises(OSError):a.Engine(self.db,self.core,self.ai,self.zoho)
     def test_status_screen_escapes_untrusted_invoice_and_has_no_entry_form(self):

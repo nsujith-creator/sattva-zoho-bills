@@ -1,6 +1,7 @@
 """Owner-authorized cloud PDF processing. Persistent states precede external writes."""
 import base64
 import contextlib
+import copy
 import hashlib
 import html
 import importlib.util
@@ -565,6 +566,111 @@ class Zoho:
             raise Hold('Bill exists; original attachment read-back differs.')
 
 
+def reading_digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+
+
+def cma_printed_charge_taxes(line, text):
+    # Only unique labelled rows matching BOTH the printed SAC and taxable base.
+    sac = str(line.get('hsn_or_sac') or '')
+    if not re.fullmatch(r'\d{4}|\d{6}|\d{8}', sac):
+        raise Hold('CMA charge tax rows require a complete printed SAC.')
+    found = {}
+    for row in text.splitlines():
+        labels = list(re.finditer(r'\b(CGST|SGST|IGST)\s*@\s*(\d+(?:\.\d+)?)\s*%', row, re.I))
+        if len(labels) != 1 or not re.search(r'(?<!\d)'+re.escape(sac)+r'(?!\d)', row):
+            continue
+        values = re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', row[labels[0].end():])
+        if len(values) < 2 or Decimal(values[-2].replace(',', '')) != amount(line.get('rate')):
+            continue
+        head = labels[0][1].lower()
+        if head in found:
+            raise Hold('CMA charge tax rows are repeated or ambiguous; no reading was substituted.')
+        percentage = Decimal(labels[0][2])
+        wanted = Decimal(str(line.get('tax_percentage'))) / (1 if head == 'igst' else 2)
+        if percentage != wanted:
+            raise Hold('CMA printed charge tax percentage differs.')
+        found[head] = {'amount': str(amount(values[-1].replace(',', ''))),
+                       'row_sha256': hashlib.sha256(row.encode()).hexdigest()}
+    if set(found) not in ({'cgst', 'sgst'}, {'igst'}):
+        raise Hold('CMA charge taxes are not uniquely evidenced by complete labelled rows.')
+    return found
+
+
+def reconcile_readings(first, second, text, core):
+    # Raw provider results remain immutable. Only printed CMA tax rows may replace
+    # charge-tax fields in these separate derived copies.
+    derived, corrections, sources = [], [], []
+    for label, raw in (('first', first), ('second', second)):
+        if (not isinstance(raw, dict) or raw.get('confidence') != 'high'
+                or raw.get('issues') not in ([], '', None) or raw.get('multi_invoice_count') != 1):
+            raise Hold('The two source readings disagree or are incomplete; no bill posted.')
+        parsed = copy.deepcopy(raw)
+        if core.is_cma_cgm_invoice(parsed.get('vendor_name'), text):
+            for index, line in enumerate(parsed.get('line_items', [])):
+                for head, proof in cma_printed_charge_taxes(line, text).items():
+                    if line.get(head) is None or amount(line[head]) != amount(proof['amount']):
+                        corrections.append({'reading': label, 'line': index, 'field': head,
+                                            'raw': line.get(head), 'printed': proof['amount'],
+                                            'row_sha256': proof['row_sha256']})
+                    line[head] = proof['amount']
+        sources.append(corroborate_source(parsed, text, core))
+        derived.append(parsed)
+    # CMA's printed principal and the same principal qualified C/O CCAI are
+    # equivalent only after both full names and the SAME supplier GSTIN pass PDF proof.
+    a, b = derived
+    if a.get('vendor_name') != b.get('vendor_name'):
+        normalized = lambda value: ' '.join(re.findall(r'[A-Z0-9]+', str(value).upper()))
+        base = lambda value: re.sub(r'\s*,?\s*C\s*/\s*O\.?\s+CCAI\s*$', '', str(value), flags=re.I).strip(' ,.')
+        if (a.get('vendor_gstin') and a['vendor_gstin'] == b.get('vendor_gstin')
+                and core.is_cma_cgm_invoice(a.get('vendor_name'), text)
+                and core.is_cma_cgm_invoice(b.get('vendor_name'), text)
+                and normalized(base(a['vendor_name'])) == normalized(base(b['vendor_name']))):
+            a['vendor_name'] = b['vendor_name'] = base(a['vendor_name'])
+    if source_signature(a) != source_signature(b):
+        raise Hold('The two source readings disagree after printed-field verification; no bill posted.')
+    evidence = dict(sources[0], raw_reading_sha256=[reading_digest(first), reading_digest(second)],
+                    reconciled_sha256=reading_digest(a), corrections=corrections,
+                    checked_readings=2, reconciliation='printed-cma-tax-rows-v1')
+    return a, evidence
+
+
+def select_tax_calculation(parsed, payload, route, legacy):
+    # Legacy reconciliation continues to reject all structural/tax-ID/base errors.
+    allowed = {'payload_tax_amount_cgst_mismatch', 'payload_tax_amount_sgst_mismatch',
+               'payload_tax_amount_igst_mismatch', 'payload_invoice_total_mismatch'}
+    if any(error.split(':', 1)[0] not in allowed for error in legacy['errors']):
+        raise Hold('Printed tax and proposed lines differ: '+'; '.join(legacy['errors']))
+    mode = route['tax_mode']
+    if mode not in ('cgst_sgst', 'igst'):
+        raise Hold('Domestic tax-calculation mode is unsupported.')
+    grouped = {}
+    line_head = Decimal(0)
+    factor = 2 if mode == 'cgst_sgst' else 1
+    for sent, source in zip(payload['line_items'], parsed['line_items']):
+        base = amount(sent['rate']) * amount(sent['quantity'])
+        rate = Decimal(str(source['tax_percentage']))
+        key = sent['tax_id']
+        item = grouped.setdefault(key, [Decimal(0), rate])
+        if item[1] != rate:
+            raise Hold('One tax ID maps to conflicting printed rates.')
+        item[0] += base
+        line_head += (base*rate/100/factor).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+    group_head = sum((base*rate/100/factor).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+                     for base, rate in grouped.values())
+    fields = ('tax_amount_cgst', 'tax_amount_sgst') if factor == 2 else ('tax_amount_igst',)
+    unused = ('tax_amount_igst',) if factor == 2 else ('tax_amount_cgst', 'tax_amount_sgst')
+    if any(amount(parsed[key]) for key in unused):
+        raise Hold('Printed GST contains an unexpected tax head.')
+    group_matches = all(amount(parsed[key]) == group_head for key in fields)
+    item_matches = all(amount(parsed[key]) == line_head for key in fields)
+    if not (group_matches or item_matches):
+        raise Hold('Neither supported tax-calculation mode matches the printed GST heads exactly.')
+    # Prefer the existing bill/group behavior where both calculations agree.
+    payload['is_item_level_tax_calc'] = not group_matches
+    return 'item' if payload['is_item_level_tax_calc'] else 'group'
+
+
 def validate(parsed, core, vendors, check_zoho_rounding=True):
     if parsed.get('confidence') != 'high' or parsed.get('issues') not in ([], '', None):
         raise Hold('Source is unclear: '+str(parsed.get('issues') or 'low confidence')[:300])
@@ -627,8 +733,16 @@ def validate(parsed, core, vendors, check_zoho_rounding=True):
     except (ValueError, TypeError) as exc:
         raise Hold('Invoice line or tax mapping needs review: '+str(exc)[:180]) from exc
     check = core.reconcile_payload_taxes(parsed, payload, route)
-    if not check['ok']:
-        raise Hold('Printed tax and proposed lines differ: '+'; '.join(check['errors']))
+    if route['is_overseas']:
+        if not check['ok']:
+            raise Hold('Printed tax and proposed lines differ: '+'; '.join(check['errors']))
+    else:
+        select_tax_calculation(parsed, payload, route, check)
+    if check_zoho_rounding and not route['is_overseas'] and payload['is_item_level_tax_calc'] is False:
+        per_line = sum((amount(line['rate'])*Decimal(str(line['tax_percentage']))/(100 if route['tax_mode']=='igst' else 200)).quantize(Decimal('.01'),rounding=ROUND_HALF_UP) for line in lines)
+        fields = ('tax_amount_igst',) if route['tax_mode']=='igst' else ('tax_amount_cgst','tax_amount_sgst')
+        if any(amount(parsed[field]) != per_line for field in fields):
+            raise Hold('New group-rounded invoice requires exact line-allocation proof before creation.')
     for line in lines:
         base, rate = amount(line['rate']), Decimal(str(line['tax_percentage']))
         for field in ('cgst','sgst','igst'):
@@ -636,20 +750,10 @@ def validate(parsed, core, vendors, check_zoho_rounding=True):
                 charged = (not route['is_overseas']) and ((field=='igst') == (route['tax_mode']=='igst'))
                 divisor = 100 if field=='igst' else 200
                 expected = (base*rate/divisor).quantize(Decimal('.01'),rounding=ROUND_HALF_UP) if charged else Decimal(0)
-                if amount(line[field]) != expected:
-                    raise Hold('Printed line '+field.upper()+' does not match its taxable amount and rate.')
-    if route['is_overseas'] or not check_zoho_rounding:
-        return payload
-    # Zoho can round once per tax group. Detect disagreements BEFORE creating a bill.
-    groups = {}
-    for line, source in zip(payload['line_items'], lines):
-        group = groups.setdefault(line['tax_id'], [Decimal(0), Decimal(str(source['tax_percentage']))])
-        group[0] += amount(line['rate'])
-    factor = 2 if route['tax_mode'] == 'cgst_sgst' else 1
-    head = sum((base*rate/100/factor).quantize(Decimal('.01'), rounding=ROUND_HALF_UP) for base, rate in groups.values())
-    fields = ('tax_amount_cgst', 'tax_amount_sgst') if factor == 2 else ('tax_amount_igst',)
-    if any(amount(parsed[k]) != head for k in fields):
-        raise Hold('Zoho tax-group rounding would differ from the printed invoice. Nothing posted.')
+                # Existing-record verification can inspect the exact printed allocation.
+                # New creation has no permission to alter a printed charge-tax amount.
+                if (not charged and amount(line[field])) or (check_zoho_rounding and amount(line[field]) != expected):
+                    raise Hold('Printed line '+field.upper()+' needs exact allocation review before new creation.')
     return payload
 
 
@@ -693,6 +797,8 @@ def verify_detail(core, bid, payload, parsed, detail, owned=True):
         check['errors'].append('existing_bill_is_void')
     if len(detail.get('line_items', [])) != len(payload['line_items']):
         check['errors'].append('line_count_mismatch')
+    allocation_groups, allocation_differences = {}, []
+    complete_line_taxes = len(detail.get('line_items', [])) == len(payload['line_items'])
     for sent, saved, source in zip(payload['line_items'], detail.get('line_items', []), parsed['line_items']):
         for field in ('rate', 'quantity'):
             try:
@@ -717,6 +823,8 @@ def verify_detail(core, bid, payload, parsed, detail, owned=True):
                 check['errors'].append('line_tax_percentage_mismatch')
         # Zoho's documented line tax ID and bill-level component amounts are mandatory.
         # Inspect optional line amounts too when the service actually supplies them.
+        if not payload.get('is_reverse_charge_applied') and 'line_item_taxes' not in saved:
+            complete_line_taxes = False
         if not payload.get('is_reverse_charge_applied') and 'line_item_taxes' in saved:
             heads = {'cgst': Decimal(0), 'sgst': Decimal(0), 'igst': Decimal(0)}
             taxes = saved['line_item_taxes']
@@ -738,8 +846,24 @@ def verify_detail(core, bid, payload, parsed, detail, owned=True):
                 charged = (head == 'igst') == (mode == 'igst')
                 divisor = 100 if head == 'igst' else 200
                 expected_head = (amount(sent['rate'])*Decimal(str(source['tax_percentage']))/divisor).quantize(Decimal('.01'), rounding=ROUND_HALF_UP) if charged else Decimal(0)
-                if actual != expected_head or (source.get(head) is not None and actual != amount(source[head])):
+                printed = amount(source[head]) if source.get(head) is not None else expected_head
+                if not owned:
+                    key = (sent.get('tax_id'), str(amount(source['tax_percentage'])), head)
+                    group = allocation_groups.setdefault(key, [Decimal(0), Decimal(0)])
+                    group[0] += actual; group[1] += printed
+                    if actual != printed:
+                        allocation_differences.append((head, actual-printed))
+                elif actual != expected_head or (source.get(head) is not None and actual != printed):
                     check['errors'].append('line_'+head+'_mismatch')
+                if not charged and actual:
+                    check['errors'].append('line_'+head+'_mismatch')
+    if not owned and allocation_differences:
+        permitted = (complete_line_taxes and all(abs(delta) <= Decimal('.01') for _, delta in allocation_differences)
+                     and all(actual == printed for actual, printed in allocation_groups.values()))
+        if permitted:
+            check['duplicate_allocation_policy'] = 'owner-net-zero-penny-same-gst-head-rate-2026-10-29'
+        else:
+            check['errors'].extend('line_'+head+'_mismatch' for head, _ in allocation_differences)
     check['ok'] = not check['errors']
     return check
 
@@ -866,11 +990,9 @@ class Engine:
                 if 'source_check' not in job:
                     second = self.ai.extract(row[2], second=True)
                     self.save(job, 'checking_source', source_check=second)
-                parsed, second = job['parsed'], job.get('source_check')
-                if not isinstance(second, dict) or second.get('confidence') != 'high' or second.get('issues') not in ([], '', None) or second.get('multi_invoice_count') != 1 or source_signature(parsed) != source_signature(second):
-                    raise Hold('The two source readings disagree or are incomplete; no bill posted.')
-                evidence = corroborate_source(parsed, text, core)
-                self.save(job, 'validating', source_evidence=evidence, message='Source text checked. Matching the supplier and invoice totals.')
+                parsed, evidence = reconcile_readings(job['parsed'], job.get('source_check'), text, core)
+                self.save(job, 'validating', reconciled_parsed=copy.deepcopy(parsed), source_evidence=evidence,
+                          message='Both retained readings and printed fields checked. Matching the supplier and invoice totals.')
                 contacts = zoho.all('contacts', 'contacts', {'contact_type': 'vendor', 'filter_by': 'Status.Active'})
                 vendors = {}
                 for c in contacts:

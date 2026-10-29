@@ -74,6 +74,17 @@ class RoundingRepair(unittest.TestCase):
         bill['line_items'][1].pop('line_item_taxes')
         self.assertFalse(a.verify_detail(self.core,'999',payload,parsed,bill,owned=False)['ok'])
 
+    def test_empty_or_partial_head_arrays_cannot_prove_penny_offsets(self):
+        parsed=self.parsed(bases=('0.06','0.06'),cgst='0.02')
+        payload,bill,_=self.verify(parsed,[('0.00','0.00'),('0.02','0.02')])
+        for taxes in ([],[{'tax_name':'CGST','tax_amount':'0.00'}],
+                      [{'tax_name':'SGST','tax_amount':'0.00'}]):
+            changed=copy.deepcopy(bill);changed['line_items'][0]['line_item_taxes']=taxes
+            result=a.verify_detail(self.core,'999',payload,parsed,changed,owned=False)
+            self.assertFalse(result['ok'])
+            self.assertNotIn('duplicate_allocation_policy',result)
+        self.assertTrue(a.verify_detail(self.core,'999',payload,parsed,bill,owned=False)['ok'])
+
     def test_equal_header_totals_never_hide_changed_quantity(self):
         parsed=self.parsed()
         payload,bill,_=self.verify(parsed,[('9.01','9.01'),('8.99','8.99')])
@@ -132,6 +143,14 @@ class RoundingRepair(unittest.TestCase):
         for changed in (text+'\nCGST @ 9% DOC 996713 GH 100.00 9.00',
                         text.replace('996713','999999')):
             with self.assertRaises(a.Hold):a.reconcile_readings(parsed,other,changed,self.core)
+
+    def test_signed_or_credit_tax_values_never_become_positive_corrections(self):
+        parsed,text=self.cma();other=copy.deepcopy(parsed)
+        for signed in ('-9.00','−9.00','- 9.00','-INR 9.00','(9.00)','(INR 9.00)','9.00-', '+9.00'):
+            with self.subTest(signed=signed):
+                changed=text.replace('100.00 9.00','100.00 '+signed)
+                with self.assertRaisesRegex(a.Hold,'Signed or credit'):
+                    a.reconcile_readings(parsed,other,changed,self.core)
 
     def test_unrelated_disagreement_or_bad_confidence_still_holds(self):
         first,text=self.cma()

@@ -296,6 +296,26 @@ class OwnerPackaging(unittest.TestCase):
         fake_app.main.assert_not_called(); fake_app.Server.assert_not_called()
         self.assertEqual(calls, [])
 
+    def test_low_confidence_or_issues_stop_before_worker_construction(self):
+        cases,digest,engine,app,automation,calls = self.runtime()
+        path = engine.folder/(cases[0]['sha256'][:32]+'.json')
+        original = json.loads(path.read_text())
+        fake_app = types.SimpleNamespace(automation_enabled=lambda: True, Server=Mock(), main=Mock())
+        def prepare():
+            os.environ['APP_AUTOMATION_POSTING'] = '0'
+            return self.folder, self.release, {}
+        for label in ('parsed','source_check'):
+            for values in ({'confidence':'low'},{'issues':['unclear']},{'multi_invoice_count':2}):
+                job=copy.deepcopy(original);job[label].update(values);path.write_text(json.dumps(job))
+                with patch.dict(sys.modules, {'app': fake_app, 'automation': automation}), \
+                        patch.object(start, 'prepare_owner', side_effect=prepare), \
+                        patch.object(start, 'load_cases', return_value=(cases, digest)), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaisesRegex(RuntimeError,'retained readings'): start.main()
+                self.assertEqual(os.environ['APP_AUTOMATION_POSTING'], '0')
+        fake_app.main.assert_not_called(); fake_app.Server.assert_not_called()
+        self.assertEqual(calls, [])
+
     def test_changed_canonical_result_or_raw_hash_cannot_reuse_passed_receipt(self):
         runtime = self.runtime()
         self.assertTrue(self.run_checks(runtime))

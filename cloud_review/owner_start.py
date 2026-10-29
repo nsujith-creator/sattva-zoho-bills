@@ -211,8 +211,10 @@ def retained_case_jobs(folder, cases, automation):
                     or job.get('pdf_sha256') != case['sha256'] or job.get('create_attempted')
                     or (job.get('bill_id') is not None and job['bill_id'] != case['bill_id'])
                     or job.get('status') not in {'duplicate', 'needs_review'}
-                    or not isinstance(job.get('parsed'), dict) or not job['parsed']
-                    or not isinstance(job.get('source_check'), dict) or not job['source_check']):
+                    or any(not isinstance(reading, dict) or reading.get('confidence') != 'high'
+                           or reading.get('issues') not in ([], '', None)
+                           or reading.get('multi_invoice_count') != 1
+                           for reading in (job.get('parsed'), job.get('source_check')))):
                 raise RuntimeError('Complete safe retained readings required; no extra extraction authorized')
             saved = db.execute('SELECT payload_json FROM suggestions WHERE invoice_id=?', (doc_id,)).fetchone()
             intent = {'kind': 'automatic_upload_intent', 'policy': automation.POLICY,

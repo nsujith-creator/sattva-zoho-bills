@@ -580,9 +580,16 @@ def cma_printed_charge_taxes(line, text):
         labels = list(re.finditer(r'\b(CGST|SGST|IGST)\s*@\s*(\d+(?:\.\d+)?)\s*%', row, re.I))
         if len(labels) != 1 or not re.search(r'(?<!\d)'+re.escape(sac)+r'(?!\d)', row):
             continue
-        values = re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', row[labels[0].end():])
+        tail = row[labels[0].end():]
+        values = re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', tail)
         if len(values) < 2 or Decimal(values[-2].replace(',', '')) != amount(line.get('rate')):
             continue
+        currency = r'(?:(?:[A-Z]{3}|Rs\.?|₹)\s*)?'
+        signed = r'[-+−]\s*'+currency+r'\d[\d,]*\.\d{2}'
+        brackets = r'\(\s*'+currency+r'\d[\d,]*\.\d{2}\s*\)'
+        trailing = r'\d[\d,]*\.\d{2}\s*[-+−](?:\s|$)'
+        if re.search('|'.join((signed, brackets, trailing)), tail, re.I):
+            raise Hold('Signed or credit-formatted CMA tax rows require review; no amount was substituted.')
         head = labels[0][1].lower()
         if head in found:
             raise Hold('CMA charge tax rows are repeated or ambiguous; no reading was substituted.')
@@ -827,6 +834,7 @@ def verify_detail(core, bid, payload, parsed, detail, owned=True):
             complete_line_taxes = False
         if not payload.get('is_reverse_charge_applied') and 'line_item_taxes' in saved:
             heads = {'cgst': Decimal(0), 'sgst': Decimal(0), 'igst': Decimal(0)}
+            explicit_heads = set()
             taxes = saved['line_item_taxes']
             if not isinstance(taxes, list):
                 raise ProviderError('Zoho line tax details are incomplete; retained bill will be read again.', retryable=True)
@@ -839,9 +847,13 @@ def verify_detail(core, bid, payload, parsed, detail, owned=True):
                 else:
                     try:
                         heads[matching[0]] += amount(tax.get('tax_amount'))
+                        explicit_heads.add(matching[0])
                     except Hold as exc:
                         raise ProviderError('Zoho line tax amount is incomplete; retained bill will be read again.', retryable=True) from exc
             mode = core.determine_tax_route(parsed, parsed['vendor_name'], parsed.get('vendor_gstin'))['tax_mode']
+            required_heads = {'igst'} if mode == 'igst' else {'cgst', 'sgst'}
+            if not required_heads.issubset(explicit_heads):
+                complete_line_taxes = False
             for head, actual in heads.items():
                 charged = (head == 'igst') == (mode == 'igst')
                 divisor = 100 if head == 'igst' else 200

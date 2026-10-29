@@ -1,5 +1,6 @@
 """Start the retained owner inbox from repository code and private volume inputs."""
 import contextlib
+import copy
 import decimal
 import hashlib
 import json
@@ -93,8 +94,8 @@ def reading_checks(case, job, automation):
         checks['both_readings_retained'] = False
     checks['job_source_identity'] = (job.get('policy') == automation.POLICY
                                       and job.get('pdf_sha256') == case['sha256'])
-    checks['worker_verification_retained'] = (isinstance(job.get('payload'), dict) and bool(job['payload'])
-                                               and isinstance(job.get('verification'), dict)
+    checks['reconciled_payload_retained'] = isinstance(job.get('payload'), dict) and bool(job['payload'])
+    checks['worker_verification_retained'] = (isinstance(job.get('verification'), dict)
                                                and job['verification'].get('ok') is True
                                                and isinstance(job.get('source_evidence'), dict)
                                                and bool(job['source_evidence']))
@@ -113,7 +114,7 @@ def retained_original(db, case):
 
 def required_checks(case):
     return ({label + '.' + key for label in ('first', 'second') for key in case['expected']}
-            | {'both_readings_retained', 'job_source_identity', 'worker_verification_retained',
+            | {'both_readings_retained', 'job_source_identity', 'worker_verification_retained', 'reconciled_payload_retained',
                'retained_original_matches', 'duplicate_without_creation', 'readback_verified',
                'existing_record_unchanged', 'source_corroborated'})
 
@@ -178,6 +179,21 @@ def enable_posting(engine, automation):
                 engine.save(job, 'validating', message='Source checks completed; approved automatic posting is now active.')
 
 
+def rebuild_payload(parsed, case, doc_id, client, automation, core):
+    vendors = {}
+    for contact in client.all('contacts', 'contacts', {'contact_type': 'vendor', 'filter_by': 'Status.Active'}):
+        name = contact.get('contact_name', '').strip().upper()
+        entry = {'id': contact.get('contact_id'), 'gst_no': contact.get('gst_no') or ''}
+        if name in vendors:
+            vendors[name].setdefault('duplicates', []).append(entry)
+        else:
+            vendors[name] = entry
+    payload = automation.validate(copy.deepcopy(parsed), core, vendors, check_zoho_rounding=False)
+    marker = 'Sattva source SHA256 ' + case['sha256'] + '; upload ' + doc_id
+    payload['notes'] = str(payload.get('notes') or '') + '\n' + marker
+    return payload
+
+
 def run_original_checks(engine, folder, release, cases, manifest_hash, app, automation):
     receipt_path = folder / 'owner-original-acceptance.json'
     os.environ['APP_AUTOMATION_POSTING'] = '0'
@@ -226,8 +242,14 @@ def run_original_checks(engine, folder, release, cases, manifest_hash, app, auto
                     core = engine.core or automation.load_core()
                     evidence = automation.corroborate_source(parsed, engine.source_reader(case['pdf']), core)
                     checks['source_corroborated'] = isinstance(evidence, dict) and bool(evidence)
-                    detail = automation.verify_detail(core, case['bill_id'], job['payload'], parsed, after, owned=False)
+                    payload = rebuild_payload(parsed, case, doc_id, client, automation, core)
+                    if job.get('payload') and job['payload'] != payload:
+                        raise RuntimeError('Retained payload differs from current source/vendor validation')
+                    detail = automation.verify_detail(core, case['bill_id'], payload, parsed, after, owned=False)
                     checks['readback_verified'] = detail.get('ok') is True
+                    if checks['source_corroborated'] and checks['readback_verified'] and checks['duplicate_without_creation']:
+                        engine.save(job, 'duplicate', payload=payload, verification=detail, source_evidence=evidence)
+                    checks['reconciled_payload_retained'] = isinstance(job.get('payload'), dict) and bool(job['payload'])
             passed = set(checks) == required_checks(case) and all(value is True for value in checks.values())
             result['cases'].append({'case': case['case'], 'id': doc_id, 'bill_id': case['bill_id'],
                                     'pdf_sha256': case['sha256'], 'job_sha256': job_fingerprint(job),

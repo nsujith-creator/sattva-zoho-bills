@@ -121,9 +121,7 @@ class OwnerPackaging(unittest.TestCase):
             jobs[doc_id] = {'id': doc_id, 'policy': 'synthetic-policy', 'pdf_sha256': case['sha256'],
                             'status': 'duplicate', 'bill_id': case['bill_id'],
                             'parsed': parsed, 'source_check': copy.deepcopy(parsed),
-                            'verification': {'ok': True, 'errors': []}, 'source_evidence': {'matched': True},
-                            'payload': {'bill_number': case['expected']['invoice_number'], 'vendor_id': '7',
-                                        'total': '118.00', 'line_items': [{'rate': '100.00', 'quantity': '1'}]}}
+                            'verification': {'ok': True, 'errors': []}, 'source_evidence': {'matched': True}}
         first_id = cases[0]['sha256'][:32]
         if failure == 'wrong_bill': jobs[first_id]['bill_id'] = '999'
         if failure == 'wrong_total': jobs[first_id]['parsed']['total'] = '117.99'
@@ -133,11 +131,14 @@ class OwnerPackaging(unittest.TestCase):
         if failure == 'held': jobs[first_id]['status'] = 'needs_review'
         if failure == 'wrong_source': jobs[first_id]['pdf_sha256'] = 'f' * 64
         if failure == 'missing_worker_verification': jobs[first_id].pop('verification')
-        if failure == 'missing_payload': jobs[first_id].pop('payload')
+        if failure == 'conflicting_payload': jobs[first_id]['payload'] = {'bill_number': 'CONFLICT'}
         state = self.folder / 'automation'; state.mkdir(exist_ok=True)
         for key, job in jobs.items(): (state / (key + '.json')).write_text(json.dumps(job))
+        def save(job, status, **fields):
+            job.update(fields); job['status'] = status
+            (state / (job['id'] + '.json')).write_text(json.dumps(job))
         engine = types.SimpleNamespace(read=lambda key: jobs[key], folder=state,
-                                       lock=threading.Lock(), save=Mock(), core=object(),
+                                       lock=threading.Lock(), save=save, core=object(),
                                        source_reader=lambda pdf: 'synthetic text')
         calls = []
         def call(route):
@@ -157,7 +158,15 @@ class OwnerPackaging(unittest.TestCase):
         def atomic(path, payload): path.write_text(json.dumps(payload))
         def verify(core, bid, payload, parsed, detail, owned=False):
             return {'ok': failure != 'readback_mismatch', 'errors': [] if failure != 'readback_mismatch' else ['synthetic mismatch']}
-        automation = types.SimpleNamespace(Zoho=lambda: types.SimpleNamespace(call=call), MONEY={'total'},
+        def validate(parsed, core, vendors, check_zoho_rounding=False):
+            if failure == 'validation_hold': raise RuntimeError('Synthetic source/vendor hold')
+            self.assertEqual(vendors, {'SYNTHETIC': {'id': '7', 'gst_no': 'synthetic'}})
+            self.assertFalse(check_zoho_rounding)
+            return {'bill_number': parsed['invoice_number'], 'vendor_id': '7',
+                    'total': '118.00', 'line_items': [{'rate': '100.00', 'quantity': '1'}]}
+        client = types.SimpleNamespace(call=call, all=lambda *args: [
+            {'contact_name': 'SYNTHETIC', 'contact_id': '7', 'gst_no': 'synthetic'}])
+        automation = types.SimpleNamespace(Zoho=lambda: client, MONEY={'total'}, validate=validate,
                                            POLICY='synthetic-policy', TERMINAL={'duplicate', 'needs_review'}, atomic=atomic,
                                            source_signature=lambda reading: json.dumps(reading, sort_keys=True),
                                            load_core=lambda: object(), verify_detail=verify,
@@ -181,6 +190,10 @@ class OwnerPackaging(unittest.TestCase):
             start.run_original_checks(engine, self.folder, self.release, cases, digest, app, automation)
         self.assertEqual(os.environ['APP_AUTOMATION_POSTING'], '1')
         self.assertEqual(len(calls), 4)
+        for case in cases:
+            job = engine.read(case['sha256'][:32])
+            self.assertTrue(job['payload'])
+            self.assertIn(case['sha256'], job['payload']['notes'])
         self.assertTrue(self.accepted(cases, digest, automation))
         with contextlib.closing(sqlite3.connect(self.folder / 'review.sqlite3')) as db:
             self.assertEqual(db.execute('SELECT count(*) FROM invoices').fetchone()[0], 2)
@@ -191,7 +204,7 @@ class OwnerPackaging(unittest.TestCase):
             self.assertEqual(db.execute('SELECT count(*) FROM invoices').fetchone()[0], 2)
 
     def test_mismatch_missing_reading_hold_and_read_failure_keep_posting_off(self):
-        for failure in ('wrong_bill', 'wrong_total', 'missing_reading', 'empty_reading', 'second_wrong_total', 'held', 'record_changed', 'read_error', 'empty_record', 'missing_record_total', 'nonfinite_record_total', 'wrong_source', 'missing_worker_verification', 'missing_payload', 'readback_mismatch'):
+        for failure in ('wrong_bill', 'wrong_total', 'missing_reading', 'empty_reading', 'second_wrong_total', 'held', 'record_changed', 'read_error', 'empty_record', 'missing_record_total', 'nonfinite_record_total', 'wrong_source', 'missing_worker_verification', 'conflicting_payload', 'validation_hold', 'readback_mismatch'):
             with self.subTest(failure=failure):
                 db = self.folder / 'review.sqlite3'
                 if db.exists(): db.unlink()
@@ -274,6 +287,75 @@ class OwnerPackaging(unittest.TestCase):
                 with self.assertRaises(RuntimeError): start.prepare_owner()
                 self.assertEqual(os.environ['APP_AUTOMATION_POSTING'], '0')
                 drop.assert_not_called()
+
+    def test_actual_worker_duplicates_without_payload_are_reconciled_without_creation(self):
+        try:
+            import automation as actual
+            from test_automation import core_fixture, invoice, source_fixture, GSTIN
+        except ImportError:
+            self.skipTest('Full-repository worker fixtures unavailable in source-only review export')
+        core = core_fixture()
+        parsed_by_pdf, bills, cases = {}, {}, []
+        for index, source in enumerate(self.cases, 1):
+            pdf = (self.inputs / source['filename']).read_bytes()
+            parsed = invoice(); parsed['bill_number'] = 'SYNTHETIC-00' + str(index)
+            parsed_by_pdf[pdf] = parsed
+            expected = {key: parsed[key] for key in ('bill_number', 'bill_date', 'currency_code',
+                                                     'vendor_gstin', 'buyer_gstin', 'invoice_total')}
+            case = dict(source, expected=expected)
+            cases.append(case)
+            payload = actual.validate(copy.deepcopy(parsed), core, {
+                'SYNTHETIC FREIGHT VENDOR': {'id': '123', 'gst_no': GSTIN}}, check_zoho_rounding=False)
+            bills[case['bill_id']] = dict(payload, bill_id=case['bill_id'], currency_code='INR',
+                sub_total=100, tax_total=18, total=118, gst_no=GSTIN,
+                taxes=[{'tax_name': 'CGST9', 'tax_amount': 9}, {'tax_name': 'SGST9', 'tax_amount': 9}])
+        self.write_manifest(cases=cases)
+        cases, digest = start.load_cases(self.folder, self.release)
+        db_path = self.folder / 'review.sqlite3'
+        with contextlib.closing(sqlite3.connect(db_path)) as db, db:
+            db.execute('CREATE TABLE invoices(id TEXT PRIMARY KEY, filename TEXT, sha256 TEXT UNIQUE, created_at TEXT, pdf BLOB)')
+            db.execute('CREATE TABLE suggestions(invoice_id TEXT PRIMARY KEY, payload_json TEXT, created_at TEXT)')
+            for case in cases:
+                db.execute('INSERT INTO invoices VALUES(?,?,?,?,?)',
+                           (case['sha256'][:32], case['filename'], case['sha256'], 'synthetic', case['pdf']))
+        stats = {'ai': 0, 'creates': 0, 'attachments': 0}
+        def extract(pdf, second=False):
+            stats['ai'] += 1
+            return copy.deepcopy(parsed_by_pdf[pdf])
+        def call(route, params=None, payload=None):
+            if payload is not None:
+                stats['creates'] += 1
+                raise AssertionError('Acceptance must never create')
+            return {'code': 0, 'bill': copy.deepcopy(bills[route.split('/')[-1]])}
+        def find(vendor_id, number):
+            return next(copy.deepcopy(bill) for bill in bills.values() if bill['bill_number'] == number)
+        client = types.SimpleNamespace(call=call, find=find,
+            all=lambda *args: [{'contact_name': 'SYNTHETIC FREIGHT VENDOR', 'contact_id': '123', 'gst_no': GSTIN}],
+            attach=Mock(side_effect=AssertionError('Acceptance must never attach')),
+            verify_attachment=Mock(side_effect=AssertionError('Acceptance must never attach')))
+        engine = actual.Engine(db_path, core=core, ai=types.SimpleNamespace(extract=extract), zoho=client,
+            source_reader=lambda pdf: source_fixture().replace('SYNTHETIC-001', parsed_by_pdf[pdf]['bill_number']))
+        self.addCleanup(engine.close)
+        os.environ['APP_AUTOMATION_POSTING'] = '0'
+        with patch('urllib.request.urlopen', side_effect=AssertionError('Network forbidden')):
+            for case in cases:
+                doc_id = case['sha256'][:32]
+                engine.enqueue(doc_id); engine.process(doc_id)
+                self.assertEqual(engine.read(doc_id)['status'], 'duplicate')
+                self.assertNotIn('payload', engine.read(doc_id))
+            before = copy.deepcopy(bills)
+            with patch.object(actual, 'Zoho', return_value=client), contextlib.redirect_stdout(io.StringIO()):
+                start.run_original_checks(engine, self.folder, self.release, cases, digest,
+                                          types.SimpleNamespace(connect=sqlite3.connect), actual)
+            self.assertEqual(os.environ['APP_AUTOMATION_POSTING'], '1')
+            self.assertTrue(start.accepted_receipt(self.folder / 'owner-original-acceptance.json',
+                self.release, digest, cases, self.folder, actual))
+        self.assertEqual(bills, before)
+        self.assertEqual(stats, {'ai': 4, 'creates': 0, 'attachments': 0})
+        client.attach.assert_not_called(); client.verify_attachment.assert_not_called()
+        for case in cases:
+            self.assertTrue(engine.read(case['sha256'][:32])['payload'])
+
 
     def test_wrong_mount_is_refused_before_privilege_change(self):
         with patch.dict(os.environ, {'DATA_DIR': '/other'}), patch.object(start.container_start, 'prepare_and_drop') as drop:

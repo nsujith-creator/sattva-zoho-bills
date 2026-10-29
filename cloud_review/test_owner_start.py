@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import sys
 import sqlite3
 import tempfile
 import threading
@@ -90,17 +91,22 @@ class OwnerPackaging(unittest.TestCase):
         path.write_bytes(b'%PDF-' + b'x' * 5000000)
         with self.assertRaises(RuntimeError): start.load_cases(self.folder, self.release)
 
-    def test_receipt_must_bind_exact_release_and_manifest(self):
+    def test_receipt_must_bind_release_manifest_and_complete_case_proof(self):
+        runtime = self.runtime()
+        cases, digest, engine, app, automation, calls = runtime
+        self.assertFalse(self.accepted(cases, digest, automation))
+        self.assertTrue(self.run_checks(runtime))
         receipt = self.folder / 'owner-original-acceptance.json'
-        self.assertFalse(start.accepted_receipt(receipt, self.release, 'c' * 64))
-        data = {'release': self.release, 'manifest_sha256': 'c' * 64, 'all_pass': True, 'case_count': 2}
-        receipt.write_text(json.dumps(data))
-        self.assertTrue(start.accepted_receipt(receipt, self.release, 'c' * 64))
-        for key, value in [('release', 'b' * 40), ('manifest_sha256', 'd' * 64),
-                           ('all_pass', False), ('case_count', 1)]:
+        original = json.loads(receipt.read_text())
+        for key, value in [('release', 'b' * 40), ('manifest_sha256', 'd' * 64), ('all_pass', False)]:
             with self.subTest(key=key):
-                changed = dict(data, **{key: value}); receipt.write_text(json.dumps(changed))
-                self.assertFalse(start.accepted_receipt(receipt, self.release, 'c' * 64))
+                receipt.write_text(json.dumps(dict(original, **{key: value})))
+                self.assertFalse(self.accepted(cases, digest, automation))
+        for mutate in (lambda value: value.update(case_count=1), lambda value: value.update(cases=[]),
+                       lambda value: value['cases'][0]['checks'].pop('readback_verified'),
+                       lambda value: value['cases'][0].update(bill_id='999')):
+            changed = copy.deepcopy(original); mutate(changed); receipt.write_text(json.dumps(changed))
+            with self.assertRaises(RuntimeError): self.accepted(cases, digest, automation)
 
     def runtime(self, failure=None):
         cases, digest = start.load_cases(self.folder, self.release)
@@ -108,29 +114,66 @@ class OwnerPackaging(unittest.TestCase):
         with contextlib.closing(sqlite3.connect(db)) as conn, conn:
             conn.execute('CREATE TABLE invoices (id TEXT PRIMARY KEY, filename TEXT, sha256 TEXT UNIQUE, created_at TEXT, pdf BLOB)')
             conn.execute('CREATE TABLE suggestions (invoice_id TEXT PRIMARY KEY, payload_json TEXT, created_at TEXT)')
-        jobs = {case['sha256'][:32]: {'status': 'duplicate', 'bill_id': case['bill_id'],
-                                      'parsed': dict(case['expected']), 'source_check': {}}
-                for case in cases}
-        if failure == 'wrong_bill': jobs[cases[0]['sha256'][:32]]['bill_id'] = '999'
-        if failure == 'wrong_total': jobs[cases[0]['sha256'][:32]]['parsed']['total'] = '117.99'
-        if failure == 'missing_reading': jobs[cases[0]['sha256'][:32]].pop('source_check')
-        if failure == 'held': jobs[cases[0]['sha256'][:32]]['status'] = 'needs_review'
-        engine = types.SimpleNamespace(read=lambda key: jobs[key], folder=self.folder,
-                                       lock=threading.Lock(), save=Mock())
+        jobs = {}
+        for case in cases:
+            parsed = dict(case['expected'], confidence='high', issues=[], multi_invoice_count=1)
+            doc_id = case['sha256'][:32]
+            jobs[doc_id] = {'id': doc_id, 'policy': 'synthetic-policy', 'pdf_sha256': case['sha256'],
+                            'status': 'duplicate', 'bill_id': case['bill_id'],
+                            'parsed': parsed, 'source_check': copy.deepcopy(parsed),
+                            'verification': {'ok': True, 'errors': []}, 'source_evidence': {'matched': True},
+                            'payload': {'bill_number': case['expected']['invoice_number'], 'vendor_id': '7',
+                                        'total': '118.00', 'line_items': [{'rate': '100.00', 'quantity': '1'}]}}
+        first_id = cases[0]['sha256'][:32]
+        if failure == 'wrong_bill': jobs[first_id]['bill_id'] = '999'
+        if failure == 'wrong_total': jobs[first_id]['parsed']['total'] = '117.99'
+        if failure == 'missing_reading': jobs[first_id].pop('source_check')
+        if failure == 'empty_reading': jobs[first_id]['source_check'] = {}
+        if failure == 'second_wrong_total': jobs[first_id]['source_check']['total'] = '117.99'
+        if failure == 'held': jobs[first_id]['status'] = 'needs_review'
+        if failure == 'wrong_source': jobs[first_id]['pdf_sha256'] = 'f' * 64
+        if failure == 'missing_worker_verification': jobs[first_id].pop('verification')
+        if failure == 'missing_payload': jobs[first_id].pop('payload')
+        state = self.folder / 'automation'; state.mkdir(exist_ok=True)
+        for key, job in jobs.items(): (state / (key + '.json')).write_text(json.dumps(job))
+        engine = types.SimpleNamespace(read=lambda key: jobs[key], folder=state,
+                                       lock=threading.Lock(), save=Mock(), core=object(),
+                                       source_reader=lambda pdf: 'synthetic text')
         calls = []
         def call(route):
             self.assertEqual(os.environ['APP_AUTOMATION_POSTING'], '0')
             calls.append(route)
             if failure == 'read_error': raise OSError('fake transient')
-            result = {'bill': {'bill_id': route.split('/')[-1], 'total': '118.00'}}
+            if failure == 'empty_record': return {'bill': {}}
+            number = next(case['expected']['invoice_number'] for case in cases if route.endswith('/' + case['bill_id']))
+            result = {'bill': {'bill_id': route.split('/')[-1], 'vendor_id': '7', 'bill_number': number,
+                               'date': '2026-01-01', 'currency_code': 'INR', 'sub_total': '100.00',
+                               'tax_total': '18.00', 'total': '118.00',
+                               'line_items': [{'rate': '100.00', 'quantity': '1'}]}}
             if failure == 'record_changed' and len(calls) > 2: result['bill']['total'] = '119.00'
+            if failure == 'missing_record_total': result['bill'].pop('total')
+            if failure == 'nonfinite_record_total': result['bill']['total'] = 'NaN'
             return result
-        client = types.SimpleNamespace(call=call)
         def atomic(path, payload): path.write_text(json.dumps(payload))
-        automation = types.SimpleNamespace(Zoho=lambda: client, MONEY={'total'}, POLICY='synthetic-policy',
-                                           TERMINAL={'duplicate', 'needs_review'}, atomic=atomic)
+        def verify(core, bid, payload, parsed, detail, owned=False):
+            return {'ok': failure != 'readback_mismatch', 'errors': [] if failure != 'readback_mismatch' else ['synthetic mismatch']}
+        automation = types.SimpleNamespace(Zoho=lambda: types.SimpleNamespace(call=call), MONEY={'total'},
+                                           POLICY='synthetic-policy', TERMINAL={'duplicate', 'needs_review'}, atomic=atomic,
+                                           source_signature=lambda reading: json.dumps(reading, sort_keys=True),
+                                           load_core=lambda: object(), verify_detail=verify,
+                                           corroborate_source=lambda parsed, text, core: {'matched': True})
         app = types.SimpleNamespace(connect=sqlite3.connect)
         return cases, digest, engine, app, automation, calls
+
+    def accepted(self, cases, digest, automation):
+        return start.accepted_receipt(self.folder / 'owner-original-acceptance.json',
+                                      self.release, digest, cases, self.folder, automation)
+
+    def run_checks(self, runtime):
+        cases, digest, engine, app, automation, calls = runtime
+        with contextlib.redirect_stdout(io.StringIO()):
+            start.run_original_checks(engine, self.folder, self.release, cases, digest, app, automation)
+        return self.accepted(cases, digest, automation)
 
     def test_both_duplicates_and_unchanged_records_enable_posting(self):
         cases, digest, engine, app, automation, calls = self.runtime()
@@ -138,7 +181,7 @@ class OwnerPackaging(unittest.TestCase):
             start.run_original_checks(engine, self.folder, self.release, cases, digest, app, automation)
         self.assertEqual(os.environ['APP_AUTOMATION_POSTING'], '1')
         self.assertEqual(len(calls), 4)
-        self.assertTrue(start.accepted_receipt(self.folder / 'owner-original-acceptance.json', self.release, digest))
+        self.assertTrue(self.accepted(cases, digest, automation))
         with contextlib.closing(sqlite3.connect(self.folder / 'review.sqlite3')) as db:
             self.assertEqual(db.execute('SELECT count(*) FROM invoices').fetchone()[0], 2)
             self.assertEqual(db.execute('SELECT count(*) FROM suggestions').fetchone()[0], 2)
@@ -148,7 +191,7 @@ class OwnerPackaging(unittest.TestCase):
             self.assertEqual(db.execute('SELECT count(*) FROM invoices').fetchone()[0], 2)
 
     def test_mismatch_missing_reading_hold_and_read_failure_keep_posting_off(self):
-        for failure in ('wrong_bill', 'wrong_total', 'missing_reading', 'held', 'record_changed', 'read_error'):
+        for failure in ('wrong_bill', 'wrong_total', 'missing_reading', 'empty_reading', 'second_wrong_total', 'held', 'record_changed', 'read_error', 'empty_record', 'missing_record_total', 'nonfinite_record_total', 'wrong_source', 'missing_worker_verification', 'missing_payload', 'readback_mismatch'):
             with self.subTest(failure=failure):
                 db = self.folder / 'review.sqlite3'
                 if db.exists(): db.unlink()
@@ -157,7 +200,70 @@ class OwnerPackaging(unittest.TestCase):
                 with contextlib.redirect_stdout(io.StringIO()):
                     start.run_original_checks(engine, self.folder, self.release, cases, digest, app, automation)
                 self.assertEqual(os.environ['APP_AUTOMATION_POSTING'], '0')
-                self.assertFalse(start.accepted_receipt(self.folder / 'owner-original-acceptance.json', self.release, digest))
+                self.assertFalse(self.accepted(cases, digest, automation))
+
+    def test_changed_or_missing_retained_job_cannot_reuse_passed_receipt(self):
+        runtime = self.runtime()
+        self.assertTrue(self.run_checks(runtime))
+        cases, digest, engine, app, automation, calls = runtime
+        path = engine.folder / (cases[0]['sha256'][:32] + '.json')
+        original = path.read_bytes()
+        job = json.loads(original); job['source_check'] = {}
+        path.write_text(json.dumps(job))
+        with self.assertRaises(RuntimeError): self.accepted(cases, digest, automation)
+        path.write_bytes(original); path.unlink()
+        with self.assertRaises(OSError): self.accepted(cases, digest, automation)
+
+    def test_retained_original_blob_must_match_before_acceptance_or_restart(self):
+        runtime = self.runtime()
+        self.assertTrue(self.run_checks(runtime))
+        cases, digest, engine, app, automation, calls = runtime
+        with contextlib.closing(sqlite3.connect(self.folder / 'review.sqlite3')) as db, db:
+            db.execute('UPDATE invoices SET pdf=? WHERE sha256=?', (b'%PDF-wrong original', cases[0]['sha256']))
+        with self.assertRaises(RuntimeError): self.accepted(cases, digest, automation)
+        self.assertFalse(self.run_checks(runtime))
+        self.assertEqual(os.environ['APP_AUTOMATION_POSTING'], '0')
+
+    def test_existing_approved_rows_receive_missing_intents(self):
+        runtime = self.runtime()
+        cases, digest, engine, app, automation, calls = runtime
+        with contextlib.closing(sqlite3.connect(self.folder / 'review.sqlite3')) as db, db:
+            for case in cases:
+                db.execute('INSERT INTO invoices VALUES(?,?,?,?,?)',
+                           (case['sha256'][:32], case['filename'], case['sha256'], 'synthetic', case['pdf']))
+        self.assertTrue(self.run_checks(runtime))
+        with contextlib.closing(sqlite3.connect(self.folder / 'review.sqlite3')) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM suggestions').fetchone()[0], 2)
+
+    def test_conflicting_existing_review_intent_is_preserved_and_holds(self):
+        runtime = self.runtime()
+        cases, digest, engine, app, automation, calls = runtime
+        with contextlib.closing(sqlite3.connect(self.folder / 'review.sqlite3')) as db, db:
+            case = cases[0]
+            db.execute('INSERT INTO invoices VALUES(?,?,?,?,?)',
+                       (case['sha256'][:32], case['filename'], case['sha256'], 'synthetic', case['pdf']))
+            db.execute('INSERT INTO suggestions VALUES(?,?,?)', (case['sha256'][:32], '{"kind":"manual"}', 'synthetic'))
+        self.assertFalse(self.run_checks(runtime))
+        with contextlib.closing(sqlite3.connect(self.folder / 'review.sqlite3')) as db:
+            self.assertEqual(db.execute('SELECT payload_json FROM suggestions').fetchone()[0], '{"kind":"manual"}')
+
+    def test_invalid_pass_receipt_keeps_posting_off_before_worker_creation(self):
+        runtime = self.runtime()
+        self.assertTrue(self.run_checks(runtime))
+        cases, digest, engine, app, automation, calls = runtime
+        path = self.folder / 'owner-original-acceptance.json'
+        receipt = json.loads(path.read_text()); receipt['cases'] = []; path.write_text(json.dumps(receipt))
+        fake_app = types.SimpleNamespace(automation_enabled=lambda: True, Server=Mock(), main=Mock())
+        def prepare():
+            os.environ['APP_AUTOMATION_POSTING'] = '0'
+            return self.folder, self.release, {}
+        with patch.dict(sys.modules, {'app': fake_app, 'automation': automation}), \
+                patch.object(start, 'prepare_owner', side_effect=prepare), \
+                patch.object(start, 'load_cases', return_value=(cases, digest)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(RuntimeError): start.main()
+        self.assertEqual(os.environ['APP_AUTOMATION_POSTING'], '0')
+        fake_app.main.assert_not_called(); fake_app.Server.assert_not_called()
 
     def test_expired_or_extended_window_forces_posting_off_before_volume_access(self):
         for stop in ('999', str(1000 + 8 * 86400)):

@@ -1,23 +1,27 @@
 # Owner cloud packaging repair — 29 October 2026
 
-The approved cloud update never reached a build. It put two test PDFs across48 environment variables and executed an encoded startup script from another variable. Railway's automated support response says this oversized, unsupported changeset stopped applying at17:57UTC; it explicitly says the deployment incident was not this apply's cause. Pending payload/source fields are independently observed. The provider-internal diagnosis is an automated support report, not a separately reproduced infrastructure finding.
+The previous approved cloud update never reached a build. It transported test PDFs across48 environment variables and executed encoded startup code from another. Railway's automated support response reports that the oversized, unsupported changeset stopped applying at17:57UTC; it separates this failure from the deployment incident. The payload is independently confirmed; the internal diagnosis remains an automated provider report. At29October03:01UTC, the failed apply has cleared, the PDF variables are absent from live configuration, and the older release remains live.
 
-## Repair
-Run repository owner_start.py directly. Docker copies it and the root context whitelist admits it. The same two approved PDFs live as separate files on the retained private volume, alongside a small private release-bound expectations manifest. No executable source or PDFs are shipped in environment variables. No business manifest, real bill IDs, confidential invoices or credentials are committed.
+## Final change
 
-Owner storage, privilege drop, existing expiry, source checks, SQLite backup, retained synthetic backups, USD0.50 allowance and posting hold are preserved. Both source cases must reconcile to their expected existing records with both readings retained and exact existing-record equality before conditional NEW-upload posting enables. The receipt binds the exact deployed release and private manifest. Restarts reuse durable jobs/readings; no substitute financial record is created.
+The owner service runs repository code with the explicit command `python /app/owner_start.py`. Docker includes that file. The same two specifically approved originals remain separate private-volume files with a small release-bound expectations manifest. No executable code or invoice bytes are transported in environment variables. No real bill IDs, business expectations, PDF bytes or credentials are in this PR.
 
-The reviewed parser, accounting checks, duplicate logic, Zoho client, authentication and installed Windows workflow are unchanged. No provider, dependency, credential, schema or resource is added. Unsupported financial cases still hold.
+The launcher retains the owner directory, privilege drop, expiry, source/backup checks and existing USD0.50 allowance. Posting stays off before worker creation. Source checks, both complete readings, original BLOB/hash and job identity, full existing bill readbacks and unchanged records must pass before conditional NEW-upload posting enables. A passed receipt requires every case/check plus matching retained originals and complete job fingerprints; invalid passed evidence prevents worker creation. Existing approved originals receive missing exact intents, while conflicting existing review data is preserved and held. The non-reentrant worker lock protects the reused verifier and is released before posting activation.
+
+Parser/accounting/duplicate/Zoho/authentication/core/Windows source remains unchanged. No new dependency/provider/credential/schema/resource. No historical bill correction or invented financial invoice.
 
 ## Verification
--12 isolated packaging tests pass: separate PDFs/hashes, missing/changed inputs, wrong release/count, repeated cases, path escape, embedded/oversized input, stale receipt, both unchanged records, mismatches/partial evidence/read failure, expiry and mount refusal.
--Full cloud suite:125 tests passed in41.019seconds with real credentials removed and external sockets blocked; loopback test traffic permitted.
--Initial full run caught the new file excluded by the Docker context whitelist. Corrected, then125passed. Synthetic test SQLite handles were also closed explicitly for Windows cleanup; production SQLite handling already closes them.
--Reviewed pipeline source remains unchanged. Existing60 core tests were not repeated for this packaging-only delta.
--Private acceptance inputs prepared locally:3files,320480bytes, original PDF hashes match. Not in this PR and not uploaded by this repair.
--No real inference, financial write, merge, deployment or platform reset by these tests.
 
-## Still required
-The failed patch still says APPLYING; its inspection dialog offers no discard/cancel/retry action. Do not resubmit that payload or redeploy the old image. Railway's supported clearing procedure is required before staging corrected source/start command and small configuration.
+- **17 focused packaging tests passed**.
+- **130 full cloud tests passed in42.128seconds**, with real credentials removed and external sockets blocked; loopback tests allowed.
+- Owner-authorized independent source-only reviewer checked the same six files. It reproduced five initial evidence weaknesses; all were fixed. Reviewer reran17 tests in0.746seconds and eight independent synthetic regressions, all passing. No further supported code bug found under the supplied dependency contracts.
+- Regressions cover incomplete/empty second readings and bill responses, mismatching retained PDF BLOBs, incomplete/stale receipts, missing or conflicting intents, valid restart without provider calls, changed retained jobs and failed source corroboration.
+- Reviewed runtime/test text matches the independently inspected correction after LF normalization; final source hashes are bound in deployment configuration. The initial12/125 results belong to the earlier candidate, before these corrections. Initial Docker-context omission and Windows test SQLite cleanup errors were corrected and retained as historical evidence.
+- Existing60 core checks were not repeated because the core source is unchanged.
+- Linux privilege dropping, Docker execution and actual new-release financial behavior remain unverified by these offline tests.
 
-Independent release review and authorization of this packaging candidate remain outstanding. After supported recovery and approved deployment, prove Linux/source/PDF-reader startup, the same four approved Haiku checks, both exact unchanged existing records, then the first genuine qualifying NEW bill/read-back/original PDF hash and elapsed time. Offline tests do not establish live financial correctness. No six-gate GREEN claim.
+## Deployment boundary
+
+Use repository-root Docker context and the explicit owner startup command. The configuration contains only four ordinary entries (about900bytes), including hashes of eight source files; private inputs stay on the existing volume. Existing owner credentials/rules/data/domain/caps and original expiry remain. The failed oversized changeset is not retried.
+
+This PR is not deployment proof. Final merge/deployment authorization is separate. After approval: verify actual Linux/image/source startup; run the same four approved Haiku checks on the two originals with financial creation off; verify both exact existing records unchanged; then conditional qualifying NEW-upload posting and first genuine new bill/readback/original PDF hash/latency. No six-gate GREEN claim.

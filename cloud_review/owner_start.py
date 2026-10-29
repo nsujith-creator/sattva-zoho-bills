@@ -63,12 +63,108 @@ def load_cases(folder, release):
     return loaded, hashlib.sha256(manifest).hexdigest()
 
 
-def accepted_receipt(path, release, manifest_hash):
+def job_fingerprint(job):
+    return hashlib.sha256(json.dumps(job, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def reading_checks(case, job, automation):
+    first, second = job.get('parsed'), job.get('source_check')
+    checks = {}
+    for label, reading in (('first', first), ('second', second)):
+        for key, expected in case['expected'].items():
+            try:
+                value = reading.get(key) if isinstance(reading, dict) else None
+                if key in automation.MONEY:
+                    number, wanted = decimal.Decimal(str(value)), decimal.Decimal(str(expected))
+                    ok = number.is_finite() and wanted.is_finite() and number == wanted
+                else:
+                    ok = value == expected
+            except (ValueError, TypeError, decimal.InvalidOperation):
+                ok = False
+            checks[label + '.' + key] = ok
+    complete = lambda value: (isinstance(value, dict) and bool(value)
+                             and value.get('confidence') == 'high'
+                             and value.get('issues') in ([], '', None)
+                             and value.get('multi_invoice_count') == 1)
+    try:
+        checks['both_readings_retained'] = (complete(first) and complete(second)
+                                             and automation.source_signature(first) == automation.source_signature(second))
+    except Exception:
+        checks['both_readings_retained'] = False
+    checks['job_source_identity'] = (job.get('policy') == automation.POLICY
+                                      and job.get('pdf_sha256') == case['sha256'])
+    checks['worker_verification_retained'] = (isinstance(job.get('payload'), dict) and bool(job['payload'])
+                                               and isinstance(job.get('verification'), dict)
+                                               and job['verification'].get('ok') is True
+                                               and isinstance(job.get('source_evidence'), dict)
+                                               and bool(job['source_evidence']))
+    return checks
+
+
+def retained_original(db, case):
+    row = db.execute('SELECT id,sha256,pdf FROM invoices WHERE sha256=?', (case['sha256'],)).fetchone()
+    if row is None:
+        return None
+    if (not re.fullmatch(r'[a-f0-9]{32}', row[0]) or not isinstance(row[2], bytes)
+            or hashlib.sha256(row[2]).hexdigest() != case['sha256'] or row[2] != case['pdf']):
+        raise RuntimeError('Retained original differs from the approved PDF')
+    return row[0]
+
+
+def required_checks(case):
+    return ({label + '.' + key for label in ('first', 'second') for key in case['expected']}
+            | {'both_readings_retained', 'job_source_identity', 'worker_verification_retained',
+               'retained_original_matches', 'duplicate_without_creation', 'readback_verified',
+               'existing_record_unchanged', 'source_corroborated'})
+
+
+def accepted_receipt(path, release, manifest_hash, cases, folder, automation):
     if not path.exists():
         return False
     receipt = json.loads(read_private(path, 65536))
-    return (receipt.get('release') == release and receipt.get('manifest_sha256') == manifest_hash
-            and receipt.get('all_pass') is True and receipt.get('case_count') == 2)
+    if receipt.get('release') != release or receipt.get('manifest_sha256') != manifest_hash or receipt.get('all_pass') is not True:
+        return False
+    evidence = receipt.get('cases')
+    if (receipt.get('case_count') != 2 or receipt.get('financial_creation_enabled_during_tests') is not False
+            or not isinstance(evidence, list) or len(evidence) != 2):
+        raise RuntimeError('Passed receipt lacks complete acceptance evidence')
+    by_name = {item.get('case'): item for item in evidence if isinstance(item, dict)}
+    if set(by_name) != {case['case'] for case in cases}:
+        raise RuntimeError('Passed receipt case identities differ')
+    with contextlib.closing(sqlite3.connect(folder / 'review.sqlite3')) as db:
+        for case in cases:
+            item = by_name[case['case']]
+            doc_id = retained_original(db, case)
+            if not doc_id or item.get('id') != doc_id:
+                raise RuntimeError('Passed receipt has no matching retained original')
+            job = json.loads(read_private(folder / 'automation' / (doc_id + '.json'), 2000000))
+            checks = reading_checks(case, job, automation)
+            saved_checks = item.get('checks') or {}
+            if (item.get('passed') is not True or item.get('bill_id') != case['bill_id']
+                    or item.get('pdf_sha256') != case['sha256'] or job.get('id') != doc_id
+                    or job.get('status') != 'duplicate' or job.get('bill_id') != case['bill_id']
+                    or item.get('job_sha256') != job_fingerprint(job)
+                    or not all(checks.values()) or set(saved_checks) != required_checks(case)
+                    or any(value is not True for value in saved_checks.values())
+                    or not re.fullmatch(r'[a-f0-9]{64}', str(item.get('record_sha256', '')))):
+                raise RuntimeError('Passed receipt or retained job evidence is incomplete or changed')
+    return True
+
+
+def read_existing(client, case):
+    bill = client.call('bills/' + case['bill_id']).get('bill')
+    if (not isinstance(bill, dict) or str(bill.get('bill_id')) != case['bill_id']
+            or any(not str(bill.get(key) or '').strip() for key in ('vendor_id', 'bill_number', 'date', 'currency_code'))
+            or not isinstance(bill.get('line_items'), list) or not bill['line_items']):
+        raise RuntimeError('Existing bill read-back identity or fields are incomplete')
+    for key in ('sub_total', 'tax_total', 'total'):
+        try:
+            value = bill[key]
+            if isinstance(value, bool) or not decimal.Decimal(str(value)).is_finite():
+                raise ValueError
+        except (KeyError, ValueError, TypeError, decimal.InvalidOperation) as exc:
+            raise RuntimeError('Existing bill numeric read-back is incomplete') from exc
+    return bill
 
 
 def enable_posting(engine, automation):
@@ -87,19 +183,23 @@ def run_original_checks(engine, folder, release, cases, manifest_hash, app, auto
     os.environ['APP_AUTOMATION_POSTING'] = '0'
     try:
         client = automation.Zoho()
-        before = {case['case']: client.call('bills/' + case['bill_id'])['bill'] for case in cases}
+        before = {case['case']: read_existing(client, case) for case in cases}
         ids = []
         with contextlib.closing(app.connect(folder / 'review.sqlite3')) as db, db:
             for case in cases:
-                row = db.execute('SELECT id FROM invoices WHERE sha256=?', (case['sha256'],)).fetchone()
-                doc_id = row[0] if row else case['sha256'][:32]
-                if not row:
+                existing_id = retained_original(db, case)
+                doc_id = existing_id or case['sha256'][:32]
+                if not existing_id:
                     db.execute('INSERT INTO invoices VALUES(?,?,?,?,?)',
                                (doc_id, case['filename'], case['sha256'], datetime.now(timezone.utc).isoformat(), case['pdf']))
-                    intent = {'kind': 'automatic_upload_intent', 'policy': automation.POLICY,
-                              'id': doc_id, 'pdf_sha256': case['sha256']}
+                intent = {'kind': 'automatic_upload_intent', 'policy': automation.POLICY,
+                          'id': doc_id, 'pdf_sha256': case['sha256']}
+                saved = db.execute('SELECT payload_json FROM suggestions WHERE invoice_id=?', (doc_id,)).fetchone()
+                if saved is None:
                     db.execute('INSERT INTO suggestions VALUES(?,?,?)',
                                (doc_id, json.dumps(intent), datetime.now(timezone.utc).isoformat()))
+                elif json.loads(saved[0]) != intent:
+                    raise RuntimeError('Existing source intent differs; no review data overwritten')
                 ids.append(doc_id)
         deadline = time.monotonic() + 600
         while time.monotonic() < deadline:
@@ -112,18 +212,26 @@ def run_original_checks(engine, folder, release, cases, manifest_hash, app, auto
         for case, doc_id in zip(cases, ids):
             job = engine.read(doc_id) or {}
             parsed = job.get('parsed') or {}
-            checks = {}
-            for key, expected in case['expected'].items():
-                try:
-                    checks[key] = (decimal.Decimal(str(parsed.get(key))) == decimal.Decimal(expected)
-                                   if key in automation.MONEY else parsed.get(key) == expected)
-                except (ValueError, TypeError, decimal.InvalidOperation):
-                    checks[key] = False
+            checks = reading_checks(case, job, automation)
+            checks['job_source_identity'] = checks['job_source_identity'] and job.get('id') == doc_id
+            with contextlib.closing(app.connect(folder / 'review.sqlite3')) as db:
+                checks['retained_original_matches'] = retained_original(db, case) == doc_id
             checks['duplicate_without_creation'] = job.get('status') == 'duplicate' and job.get('bill_id') == case['bill_id']
-            checks['both_readings_retained'] = isinstance(job.get('source_check'), dict)
-            checks['existing_record_unchanged'] = client.call('bills/' + case['bill_id'])['bill'] == before[case['case']]
-            passed = all(checks.values())
-            result['cases'].append({'case': case['case'], 'id': doc_id, 'status': job.get('status'),
+            after = read_existing(client, case)
+            checks['existing_record_unchanged'] = after == before[case['case']]
+            checks['source_corroborated'] = False
+            checks['readback_verified'] = False
+            if checks['both_readings_retained'] and checks['worker_verification_retained']:
+                with engine.lock:
+                    core = engine.core or automation.load_core()
+                    evidence = automation.corroborate_source(parsed, engine.source_reader(case['pdf']), core)
+                    checks['source_corroborated'] = isinstance(evidence, dict) and bool(evidence)
+                    detail = automation.verify_detail(core, case['bill_id'], job['payload'], parsed, after, owned=False)
+                    checks['readback_verified'] = detail.get('ok') is True
+            passed = set(checks) == required_checks(case) and all(value is True for value in checks.values())
+            result['cases'].append({'case': case['case'], 'id': doc_id, 'bill_id': case['bill_id'],
+                                    'pdf_sha256': case['sha256'], 'job_sha256': job_fingerprint(job),
+                                    'record_sha256': job_fingerprint(after), 'status': job.get('status'),
                                     'passed': passed, 'checks': checks})
             result['all_pass'] = result['all_pass'] and passed
         automation.atomic(receipt_path, result)
@@ -212,7 +320,7 @@ def main():
         raise RuntimeError('Approved cloud automation policy required')
     automation.load_core()
     print('AUTOMATION_LAUNCH_PROOF ' + json.dumps(proof), flush=True)
-    prior_pass = accepted_receipt(folder / 'owner-original-acceptance.json', release, manifest_hash)
+    prior_pass = accepted_receipt(folder / 'owner-original-acceptance.json', release, manifest_hash, cases, folder, automation)
     original_server = app.Server
 
     class OwnerServer(original_server):

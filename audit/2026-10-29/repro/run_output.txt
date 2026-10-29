@@ -1,0 +1,33 @@
+test_C1_consistent_misread_identity_or_buyer_registration_holds (__main__.Confirmations.test_C1_consistent_misread_identity_or_buyer_registration_holds) ... ok
+test_C2_restart_after_unanswered_create_never_posts_twice (__main__.Confirmations.test_C2_restart_after_unanswered_create_never_posts_twice) ... ok
+test_C3_reused_number_with_different_date_is_not_called_duplicate (__main__.Confirmations.test_C3_reused_number_with_different_date_is_not_called_duplicate) ... ok
+test_C4_meta_alias_uses_core_key (__main__.Confirmations.test_C4_meta_alias_uses_core_key) ... ok
+test_C5_penny_rule_counterexamples_hold (__main__.Confirmations.test_C5_penny_rule_counterexamples_hold) ... ok
+test_F1_printed_due_date_omitted_by_both_readings_still_posts (__main__.Findings.test_F1_printed_due_date_omitted_by_both_readings_still_posts) ... ok
+test_F2_payload_validated_before_upgrade_is_held_as_changed (__main__.Findings.test_F2_payload_validated_before_upgrade_is_held_as_changed) ... ok
+test_F3_retained_reading_hold_aborts_owner_startup_before_inbox_serves (__main__.Findings.test_F3_retained_reading_hold_aborts_owner_startup_before_inbox_serves) ... ok
+test_F4_credit_suffix_on_cma_tax_row_is_read_as_positive (__main__.Findings.test_F4_credit_suffix_on_cma_tax_row_is_read_as_positive) ... ok
+test_F5_new_bill_payload_requests_group_calculation_by_default (__main__.Findings.test_F5_new_bill_payload_requests_group_calculation_by_default) ... ok
+
+----------------------------------------------------------------------
+Ran 10 tests in 0.161s
+
+OK
+
+[C1] consistent misreads of number / buyer GSTIN / date held by PDF text
+
+[C2] restart after unanswered create -> retry_wait | posts: 1
+
+[C3] same number, different date -> needs_review | posts: 0
+
+[C5] same-head/rate net-zero duplicate ok: True | within-head swap ok: True | counterexamples ok-flags: {'cross_head': False, 'two_paise': False, 'empty_array': False, 'partial_array': False, 'absent_array': False} | same offsets on NEW bill ok: False
+
+[F1] printed "Due Date: 2026-11-27", both readings null -> verified | payload due_date: None | posts: 1
+
+[F2] PR27-validated job after PR28 posting enabled -> needs_review | Supplier or proposed bill changed after the previous attempt. | posts: 0
+
+[F3] retained_case_jobs -> RuntimeError | Retained source readings are incomplete or unsupported; no worker started | main() guards it before app.main(): False
+
+[F4] "9.00 CR" rows accepted as {'cgst': '9.00', 'sgst': '9.00'}
+
+[F5] is_item_level_tax_calc for ordinary NEW bill: False | residue-cancelling NEW bill: False

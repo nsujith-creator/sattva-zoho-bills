@@ -133,8 +133,187 @@ def printed_buyer_registrations(text, party='buyer'):
     return found
 
 
+def corroborate_total_transport(parsed, text):
+    """Read the labelled INR table, retaining its columns and wrapped cells.
+
+    This is source corroboration only: it never repairs either AI reading or
+    derives payable amounts from the foreign-currency reference columns.
+    """
+    normalize = lambda value: ' '.join(re.findall(r'[A-Z0-9]+', str(value).upper()))
+    fail = lambda: Hold('Total Transport source fields or table columns are missing, ambiguous or different.')
+    rows = text.splitlines()
+    pages = [page for page in text.split('\f') if page.strip()]
+    supplier = 'TOTAL TRANSPORT SYSTEMS LIMITED'
+    if normalize(parsed.get('vendor_name')) != supplier or not pages:
+        raise fail()
+    labelled_ids = {re.sub(r'[^A-Z0-9]', '', m[1].upper()) for m in re.finditer(
+        r'\b(?:tax[ \t]+)?(?:invoice|bill)(?:[ \t]*(?:number|no\.?|#|id))?[ \t]*[:#]?[ \t]*([A-Z0-9][A-Z0-9/-]*)\b',
+        text, re.I) if any(c.isdigit() for c in m[1])}
+    if labelled_ids != {re.sub(r'[^A-Z0-9]', '', str(parsed.get('bill_number')).upper())}:
+        raise fail()
+    numbers, buyers, suppliers, dates, dues, references = set(), set(), set(), set(), set(), set()
+    for page in pages:
+        if not re.search(r'^\s*Total Transport Systems Limited\s*$', page, re.I | re.M):
+            raise fail()
+        header = page.split('BILLED TO', 1)
+        if len(header) != 2:
+            raise fail()
+        regs = re.findall(r'\bGST Code\s*:\s*([A-Z0-9]{15})\b', header[0], re.I)
+        panel = header[1].split('Shipper', 1)[0]
+        buyer = re.findall(r'\bGST No\.\s*:\s*([A-Z0-9]{15})\b', panel, re.I)
+        ids = re.findall(r'\bInvoice No\.\s*:\s*([A-Z0-9/-]+)\b', page, re.I)
+        # The printed date value may wrap below the label in the right column.
+        date_rows = page.splitlines()
+        invoice_dates = []
+        for index, row in enumerate(date_rows):
+            label = re.search(r'\bInvoice Date\b', row)
+            if label:
+                window = ' '.join(value[label.start():] for value in date_rows[index:index+3])
+                invoice_dates += re.findall(r':\s*(\d{2}/[A-Za-z]{3}/\d{4})\b', window)
+        deadlines = re.findall(r'\bInvoice Due Date\s*:\s*(\d{2}/[A-Za-z]{3}/\d{4})\b', page)
+        bls = re.findall(r'\bMBL / MAWB\s*:\s*([A-Z0-9/-]+)\s*/\s*\d{2}/[A-Za-z]{3}/\d{4}', page)
+        if any(len(values) != 1 for values in (regs, buyer, ids, invoice_dates, deadlines)) or len(bls) > 1:
+            raise fail()
+        suppliers.update(regs); buyers.update(buyer); numbers.update(ids)
+        dates.update(invoice_dates); dues.update(deadlines); references.update(bls)
+    def iso(values):
+        try:
+            return {datetime.strptime(value, '%d/%b/%Y').date().isoformat() for value in values}
+        except ValueError as exc:
+            raise fail() from exc
+    for actual, expected in ((suppliers, parsed.get('vendor_gstin')), (buyers, parsed.get('buyer_gstin')),
+                             (numbers, parsed.get('bill_number')), (iso(dates), parsed.get('bill_date')),
+                             (iso(dues), parsed.get('due_date'))):
+        if actual != {expected}:
+            raise fail()
+    if parsed.get('currency_code') != 'INR' or amount(parsed.get('discounts_or_credits')):
+        raise fail()
+    if parsed.get('mbl_number') and references != {parsed['mbl_number']}:
+        raise fail()
+    labelled_currencies = re.findall(r'\b(?:invoice|payable)\s+currency\s*:\s*([A-Z]{3})\b', text, re.I)
+    if any(value.upper() != 'INR' for value in labelled_currencies):
+        raise fail()
+    # Reject source credits/adjustments instead of discarding them during table reading.
+    if re.search(r'\b(?:credit\s+(?:note|memo)|discount|round[ -]*off|adjustment)\b', text, re.I):
+        raise fail()
+    headers = [(i, list(re.finditer(r'Particulars|HSN/SAC|Curr|Qty|Rate|ROE|Taxable|CGST|SGST|Total', row)))
+               for i, row in enumerate(rows) if 'Particulars' in row and 'HSN/SAC' in row]
+    if len(headers) != 1:
+        raise fail()
+    index, labels = headers[0]
+    if [m[0] for m in labels] != ['Particulars', 'HSN/SAC', 'Curr', 'Qty', 'Rate', 'ROE',
+                                  'Taxable', 'CGST', 'CGST', 'SGST', 'SGST', 'Total']:
+        raise fail()
+    centers = [(m.start()+m.end())/2 for m in labels]
+    # Description is left aligned; every numeric column is centred under its header.
+    end = next((i for i in range(index+2, len(rows)) if re.match(r'^\s*Amount In Words\s*:', rows[i])), None)
+    if end is None:
+        raise fail()
+    table_rows = rows[index+2:end]
+    boundaries = [0, labels[1].start()]
+    for left, right in zip(centers[1:-1], centers[2:]):
+        nominal = int((left+right)/2+.5)
+        candidates = sorted(range(nominal-2, nominal+3), key=lambda value:(abs(value-nominal), value))
+        # Wrapped figures may extend one character beyond a centred heading.
+        # A boundary must not cut any printed token on any table row.
+        boundary = next((value for value in candidates if all(
+            len(row) <= value or row[value-1].isspace() or row[value].isspace() for row in table_rows)), None)
+        if boundary is None or boundary <= boundaries[-1]:
+            raise fail()
+        boundaries.append(boundary)
+    boundaries.append(None)
+    if '(INR)' not in rows[index+1] or not re.search(r'Value\s+%\s+Amt\s+%\s+Amt', rows[index+1]):
+        raise fail()
+    cells, printed = ['']*12, []
+    total = None
+    def finish():
+        if not any(cells):
+            return None
+        description = ' '.join(cells[0].split())
+        numeric = [value.replace(' ', '') for value in cells[1:]]
+        if description.upper() == 'TOTAL':
+            if any(numeric[i] for i in (0, 1, 2, 3, 4, 6, 8)):
+                raise fail()
+            return ('total', [amount(numeric[i].replace(',', '')) for i in (5, 7, 9, 10)])
+        if not description or not re.fullmatch(r'\d{4,8}', numeric[0]) or numeric[1] not in ('INR', 'USD', 'EUR'):
+            raise fail()
+        if any(not re.fullmatch(r'\d[\d,]*\.\d+', numeric[i]) for i in range(2, 11)):
+            raise fail()
+        base, cgst, sgst, gross = [amount(numeric[i].replace(',', '')) for i in (5, 7, 9, 10)]
+        if base+cgst+sgst != gross or numeric[6] != numeric[8]:
+            raise fail()
+        return ('line', {'description':normalize(description), 'hsn_or_sac':numeric[0],
+                         'rate':base, 'tax_percentage':Decimal(numeric[6])+Decimal(numeric[8]),
+                         'cgst':cgst, 'sgst':sgst})
+    for row in rows[index+2:]:
+        if re.match(r'^\s*Amount In Words\s*:', row):
+            item = finish()
+            if item and item[0] == 'total' and total is None:
+                total = item[1]
+            elif item or total is None:
+                raise fail()
+            break
+        if not row.strip():
+            item = finish()
+            if item:
+                if item[0] == 'total' and total is None:
+                    total = item[1]
+                elif item[0] == 'line' and total is None:
+                    printed.append(item[1])
+                else:
+                    raise fail()
+                cells = ['']*12
+            continue
+        if total is not None:
+            raise fail()
+        parts = [row[left:right].strip() for left, right in zip(boundaries, boundaries[1:])]
+        for i, value in enumerate(parts):
+            cells[i] += (' ' if i == 0 and cells[i] and value else '')+value
+    extracted = parsed.get('line_items')
+    if not total or not isinstance(extracted, list) or len(extracted) != len(printed) or not printed:
+        raise fail()
+    for actual, line in zip(printed, extracted):
+        if (actual['description'] != normalize(line.get('description')) or
+                actual['hsn_or_sac'] != str(line.get('hsn_or_sac')) or amount(line.get('quantity')) != 1 or
+                any(actual[key] != amount(line.get(key)) for key in ('rate', 'tax_percentage', 'cgst', 'sgst')) or
+                (line.get('igst') is not None and amount(line['igst']))):
+            raise fail()
+    expected = [amount(parsed.get(key)) for key in ('subtotal', 'tax_amount_cgst', 'tax_amount_sgst', 'invoice_total')]
+    sums = [sum(line[key] for line in printed) for key in ('rate', 'cgst', 'sgst')]
+    if total != expected or sums != total[:3] or sum(total[:3]) != total[3] or amount(parsed.get('tax_amount_igst')):
+        raise fail()
+    summary_headers = [i for i, row in enumerate(rows) if re.match(r'^\s*HSN/SAC\s+Taxable Value\s+CGST %', row)]
+    if len(summary_headers) > 1 or len(summary_headers) != sum(bool(re.match(r'^\s*HSN/SAC\b', row)) for row in rows):
+        raise fail()
+    if summary_headers:
+        groups, summary = {}, {}
+        for line in printed:
+            key = (line['hsn_or_sac'], line['tax_percentage']/2)
+            group = groups.setdefault(key, [Decimal(0)]*3)
+            for i, field in enumerate(('rate', 'cgst', 'sgst')):
+                group[i] += line[field]
+        for row in rows[summary_headers[0]+1:]:
+            if not row.strip():
+                continue
+            if re.match(r'^\s*This is a computer generated', row):
+                break
+            values = row.split()
+            if len(values) != 7 or not re.fullmatch(r'\d{4,8}', values[0]):
+                raise fail()
+            base, cr, ca, sr, sa, gross = [amount(value.replace(',', '')) for value in values[1:]]
+            key = (values[0], cr)
+            if cr != sr or base+ca+sa != gross or key in summary:
+                raise fail()
+            summary[key] = [base, ca, sa]
+        if summary != groups:
+            raise fail()
+    return {'method':'pdftotext+total-transport-columns', 'text_sha256':hashlib.sha256(text.encode()).hexdigest()}
+
+
 def corroborate_source(parsed, text, core):
     """Require independently extracted printed evidence; absence never becomes approval."""
+    if re.search(r'^\s*Total Transport Systems Limited\s*$', text, re.I | re.M):
+        return corroborate_total_transport(parsed, text)
     compact = lambda value: re.sub(r'[^A-Z0-9]', '', str(value).upper())
     tokens = set(re.findall(r'[A-Z0-9]+(?:[-/][A-Z0-9]+)*', text.upper()))
     identities = set()

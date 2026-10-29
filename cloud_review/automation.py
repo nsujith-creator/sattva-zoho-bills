@@ -612,6 +612,9 @@ def reconcile_readings(first, second, text, core):
         if (not isinstance(raw, dict) or raw.get('confidence') != 'high'
                 or raw.get('issues') not in ([], '', None) or raw.get('multi_invoice_count') != 1):
             raise Hold('The two source readings disagree or are incomplete; no bill posted.')
+        if (not isinstance(raw.get('line_items'), list) or not 0 < len(raw['line_items']) <= 100
+                or any(not isinstance(line, dict) for line in raw['line_items'])):
+            raise Hold('Each source reading requires a nonempty supported charge list.')
         parsed = copy.deepcopy(raw)
         if core.is_cma_cgm_invoice(parsed.get('vendor_name'), text):
             consumed_rows = set()

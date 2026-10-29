@@ -183,6 +183,13 @@ class RoundingRepair(unittest.TestCase):
             second=copy.deepcopy(first);second.update(values)
             with self.assertRaises(a.Hold):a.reconcile_readings(first,second,text,self.core)
 
+    def test_empty_missing_or_unsupported_charge_lists_never_reconcile(self):
+        for lines in (None,[],{},[None],[invoice()['line_items'][0]]*101):
+            first=invoice();second=copy.deepcopy(first)
+            first['line_items']=second['line_items']=lines
+            with self.assertRaisesRegex(a.Hold,'charge list'):
+                a.reconcile_readings(first,second,source_fixture(),self.core)
+
     def test_other_supplier_qualifier_is_not_silently_discarded(self):
         first,text=self.cma();second=copy.deepcopy(first)
         second['vendor_name']='CMA CGM TEST VENDOR, C/O. OTHER'

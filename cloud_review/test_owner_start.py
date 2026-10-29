@@ -354,6 +354,34 @@ class OwnerPackaging(unittest.TestCase):
         fake_app.main.assert_not_called();fake_app.Server.assert_not_called()
         self.assertEqual(calls,[])
 
+    def test_real_schema_empty_or_missing_charges_stop_before_worker(self):
+        import automation as actual
+        from test_automation import invoice,source_fixture,core_fixture
+        cases,digest,engine,app,automation,calls=self.runtime()
+        automation.reconcile_readings=actual.reconcile_readings
+        automation.source_text=lambda pdf:source_fixture()
+        core=core_fixture();automation.load_core=lambda:core
+        path=engine.folder/(cases[0]['sha256'][:32]+'.json')
+        original=json.loads(path.read_text())
+        fake_app=types.SimpleNamespace(automation_enabled=lambda:True,Server=Mock(),main=Mock())
+        def prepare():
+            os.environ['APP_AUTOMATION_POSTING']='0'
+            return self.folder,self.release,{}
+        for missing in (False,True):
+            reading=invoice()
+            if missing:reading.pop('line_items')
+            else:reading['line_items']=[]
+            job=copy.deepcopy(original);job.update(parsed=reading,source_check=copy.deepcopy(reading))
+            path.write_text(json.dumps(job))
+            with patch.dict(sys.modules,{'app':fake_app,'automation':automation}), \
+                    patch.object(start,'prepare_owner',side_effect=prepare), \
+                    patch.object(start,'load_cases',return_value=(cases,digest)), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError,'source readings'):start.main()
+            self.assertEqual(os.environ['APP_AUTOMATION_POSTING'],'0')
+        fake_app.main.assert_not_called();fake_app.Server.assert_not_called()
+        self.assertEqual(calls,[])
+
     def test_conflicting_existing_review_intent_is_preserved_and_holds(self):
         runtime = self.runtime()
         cases, digest, engine, app, automation, calls = runtime

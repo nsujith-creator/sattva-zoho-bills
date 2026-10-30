@@ -117,7 +117,7 @@ def printed_buyer_registrations(text, party='buyer'):
     selected_roles = ({'BUYER', 'BILL TO', 'BILLED TO', 'INVOICE TO', 'RECIPIENT', 'CUSTOMER'} if party == 'buyer'
                       else {'SUPPLIER', 'SELLER', 'PAYABLE TO', 'SERVICE PROVIDER'} if party == 'supplier'
                       else {'SHIPPER', 'CONSIGNEE'})
-    registration = re.compile(r'(?:GST(?:IN|\s*(?:No\.?|Number))|Tax\s+id\.?\s*no\.?)\s*[:.]?\s*(\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z0-9]{2})\b', re.I)
+    registration = re.compile(r'(?:GST(?:IN|N|\s*(?:No\.?|Number))|Tax\s+id\.?\s*no\.?)\s*[:.]?\s*(\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z0-9]{2})\b', re.I)
     rows = text.splitlines(); found = set()
     for index, row in enumerate(rows):
         labels = list(roles.finditer(row))
@@ -342,7 +342,7 @@ def corroborate_source(parsed, text, core):
         if not supplier_regs and not supplier_label:
             labelled = set()
             for row in text.splitlines():
-                for match in re.finditer(r'\bGST(?:IN|\s*(?:No\.?|Number))\s*[:.]?\s*(\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z0-9]{2})\b', row, re.I):
+                for match in re.finditer(r'\bGST(?:IN|N|\s*(?:No\.?|Number))\s*[:.]?\s*(\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z0-9]{2})\b', row, re.I):
                     if not re.search(r'\b(?:branch|office|shipper|consignee|buyer|customer)\b', row[:match.start()], re.I):
                         labelled.add(match[1].upper())
             supplier_regs = labelled-printed_buyer_registrations(text)-printed_buyer_registrations(text, 'other')
@@ -402,13 +402,19 @@ def corroborate_source(parsed, text, core):
             raise Hold('Printed '+key.replace('_', ' ')+' is not evidenced in the PDF text.')
     # Header labels distinguish the payable from other perfectly plausible printed amounts.
     labels = {'subtotal': r'(?:sub\s*total|total\s+base\s+amount|total\s+excluding\s+tax)',
-              'invoice_total': r'(?:grand\s+total|total\s+payable\s+amount|total\s+including\s+tax|invoice\s+total)',
+              'invoice_total': r'(?:grand\s+total|total\s+payable\s+amount|total\s+including\s+tax|invoice\s+total|(?<!sub\s)(?<!sub)\btotal(?=\s+(?:₹|rs\.?\s*|inr\s*)\d))',
               'tax_amount_cgst': r'(?:C[- ]?GST\s+Total\s+taxes|Total\s+CGST|^\s*CGST\b)',
               'tax_amount_sgst': r'(?:S[- ]?GST\s+Total\s+taxes|Total\s+SGST|^\s*SGST\b)',
               'tax_amount_igst': r'(?:I[- ]?GST\s+Total\s+taxes|Total\s+IGST|^\s*IGST\b)'}
     for key, label in labels.items():
         values = []
         for line in text.splitlines():
+            # A whole row such as "CGST9 (9%)   450.00" is a tax-head summary line.
+            summary = key.startswith('tax_amount_') and re.fullmatch(
+                r'\s*'+key[-4:]+r'\d+(?:\.\d+)?\s*\(\d+(?:\.\d+)?%\)\s+(?:₹|Rs\.?)?\s*(\d[\d,]*\.\d{2})\s*', line, re.I)
+            if summary:
+                values.append(Decimal(summary[1].replace(',', '')))
+                continue
             match = re.search(label, line, re.I)
             if match:
                 if key.startswith('tax_amount_') and '%' in line and not re.search(r'\btotal\b', line, re.I):
@@ -448,7 +454,7 @@ def corroborate_source(parsed, text, core):
             boundary = next((pos for pos in charge_starts if pos > begin), min(len(text), begin+2000))
             window = text[begin:boundary]
             charge_windows.append(window)
-            for head, value in re.findall(r'(CGST|SGST|IGST)\s*@?\s*(\d+(?:\.\d+)?)\s*%', window, re.I):
+            for head, value in re.findall(r'(CGST|SGST|IGST)(?:\s*@?\s*|\d+(?:\.\d+)?\s*\(\s*)(\d+(?:\.\d+)?)\s*%', window, re.I):
                 heads[head.upper()].add(Decimal(value))
             percentages.update(Decimal(x) for x in re.findall(r'(\d+(?:\.\d+)?)\s*%', text[begin:end]))
         if core.is_cma_cgm_invoice(parsed.get('vendor_name'), text):
@@ -506,6 +512,10 @@ def corroborate_source(parsed, text, core):
         match = re.search(r'\b(?:grand\s+total|total\s+payable\s+amount|invoice\s+total|total\s+amount)\b(.*)', row, re.I)
         if match:
             currencies.update(re.findall(r'\b[A-Z]{3}\b', match[1]))
+        rupee_total = re.search(r'(?<!sub\s)(?<!sub)\btotal\s+₹\s*\d(.*)', row, re.I)
+        if rupee_total:
+            currencies.add('INR')  # The rupee sign printed on the payable total.
+            currencies.update(re.findall(r'\b[A-Z]{3}\b', rupee_total[1]))
     if currencies != {str(parsed.get('currency_code') or '').upper()}:
         raise Hold('The labelled invoice/payable currency is missing, conflicting or different.')
     mbl = core.extract_mbl_from_pdf_text(text)
@@ -1178,7 +1188,7 @@ class Engine:
     def retry(self, doc_id):
         with self.state_lock:
             job = self.read(doc_id)
-            if not job or job['status'] != 'retryable':
+            if not job or not (job['status'] == 'retryable' or source_recheck_allowed(job)):
                 raise Hold('This invoice has no safe retry available.')
             self.save(job, 'queued', retry_count=job.get('retry_count', 0)+1,
                       retry_attempts=0, retry_at=0, message='Retry requested. Retained source readings will be reused.')
@@ -1369,6 +1379,14 @@ class Engine:
             self.process_guard.close()
 
 
+def source_recheck_allowed(job):
+    # A hold that stopped before any Zoho create can be checked again with the
+    # same retained readings: no paid call is repeated and nothing was written.
+    return (job.get('status') == 'needs_review' and isinstance(job.get('parsed'), dict)
+            and isinstance(job.get('source_check'), dict) and not job.get('create_attempted')
+            and not job.get('bill_id') and not job.get('payload_sha256'))
+
+
 def render_status(doc_id, filename, job, csrf=''):
     esc = lambda s: html.escape(str(s), quote=True)
     job = job or {'status': 'not_started', 'message': 'This original has not been submitted for automatic processing.'}
@@ -1377,7 +1395,7 @@ def render_status(doc_id, filename, job, csrf=''):
         org = os.environ.get('ZOHO_ORGANIZATION_ID', '')
         root = 'https://books.zoho.in/app/'+org if org.isdigit() else 'https://books.zoho.in/app'
         link = '<p><a href="'+root+'#/bills/'+esc(job['bill_id'])+'" target="_blank" rel="noopener">Open Zoho bill ↗</a></p>'
-    if job['status'] == 'retryable' and csrf:
+    if (job['status'] == 'retryable' or source_recheck_allowed(job)) and csrf:
         link += '<form method="post" action="/api/retry/'+esc(doc_id)+'"><input type="hidden" name="csrf" value="'+esc(csrf)+'"><button type="submit">Retry processing</button><p>Completed readings are reused. A missing reading uses the remaining approved AI budget. An uncertain create is only looked up.</p></form>'
     fields = job.get('parsed') or {}
     rows = ''.join('<tr><th>'+esc(k.replace('_', ' '))+'</th><td>'+esc(fields[k])+'</td></tr>'

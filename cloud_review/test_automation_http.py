@@ -92,7 +92,10 @@ class UploadJourney(unittest.TestCase):
                 # The same secure session and CSRF guard protect retry. A retained
                 # created bill resumes read-back/attachment checking without a POST.
                 retry_body=urlencode({'csrf':csrf})
-                self.assertEqual(401,request('POST','/api/retry/'+doc_id,retry_body,{'Content-Type':'application/x-www-form-urlencoded'})[0])
+                before=engine.read(doc_id)
+                status,headers,_=request('POST','/api/retry/'+doc_id,retry_body,{'Content-Type':'application/x-www-form-urlencoded'})
+                self.assertEqual((303,'/login?next=%2Freview%2F'+doc_id),(status,headers['Location']))
+                self.assertEqual(before,engine.read(doc_id))  # Signed out: sent to sign-in, nothing retried.
                 self.assertEqual(403,request('POST','/api/retry/'+doc_id,urlencode({'csrf':'wrong'}),
                     {'Cookie':cookie,'Content-Type':'application/x-www-form-urlencoded'})[0])
                 job=engine.read(doc_id);engine.save(job,'retryable')

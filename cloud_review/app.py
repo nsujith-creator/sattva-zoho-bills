@@ -224,8 +224,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def guard(self):
         if not self.authorized():
-            if self.command == 'GET' and not self.path.startswith('/api/'):
+            path = urlsplit(self.path).path
+            if self.command == 'GET' and not path.startswith('/api/'):
                 self.reply(303, headers={'Location':'/login?next='+quote(self.safe_next(self.path),safe='')})
+            elif self.command == 'POST' and (path == '/logout' or path.startswith('/api/retry/')):
+                # Browser form buttons: return to sign-in, then to the same invoice page.
+                back = '/review/'+path.removeprefix('/api/retry/') if path.startswith('/api/retry/') else '/'
+                self.reply(303, headers={'Location':'/login?next='+quote(self.safe_next(back),safe='')})
             else:
                 self.err(401, 'Your session has ended. Sign in again; saved invoices and drafts are unchanged.')
             return False

@@ -312,6 +312,31 @@ def corroborate_total_transport(parsed, text):
     return {'method':'pdftotext+total-transport-columns', 'text_sha256':hashlib.sha256(text.encode()).hexdigest()}
 
 
+def printed_description(description, text):
+    """Matches of a charge description on its printed row. A description that the
+    readings joined from wrapped cells or a separate column (e.g. a month) is
+    accepted only when at least half of it, two or more words, is contiguous on
+    the row and every remaining word follows in order within the next two lines."""
+    tokens = re.findall(r'[A-Z0-9]+', str(description or '').upper())
+    if not tokens:
+        return []
+    exact = list(re.finditer(r'\W+'.join(map(re.escape, tokens)), text, re.I))
+    if exact:
+        return exact
+    for size in range(len(tokens)-1, max(2, (len(tokens)+1)//2)-1, -1):
+        pattern = r'\W+'.join(map(re.escape, tokens[:size])) + ''.join(
+            r'[\s\S]*?\b'+re.escape(token)+r'\b' for token in tokens[size:])
+        found = [m for m in re.finditer(pattern, text, re.I) if text.count('\n', m.start(), m.end()) <= 2]
+        if found:
+            return found
+    return []
+
+
+def row_end(text, position):
+    end = text.find('\n', position)
+    return len(text) if end < 0 else end
+
+
 def corroborate_source(parsed, text, core):
     """Require independently extracted printed evidence; absence never becomes approval."""
     if re.search(r'^\s*Total Transport Systems Limited\s*$', text, re.I | re.M):
@@ -424,20 +449,19 @@ def corroborate_source(parsed, text, core):
             continue
         if not values or set(values) != {amount(parsed[key])}:
             raise Hold('The labelled '+key.replace('_', ' ')+' is missing, ambiguous or different in the PDF.')
-    charge_patterns = [re.compile(r'\W+'.join(re.findall(r'[A-Z0-9]+', str(item.get('description') or '').upper())), re.I)
-                       for item in parsed.get('line_items', []) if re.findall(r'[A-Z0-9]+', str(item.get('description') or '').upper())]
-    charge_starts = sorted({text.rfind('\n', 0, match.start())+1 for pattern in charge_patterns for match in pattern.finditer(text)})
+    charge_starts = sorted({text.rfind('\n', 0, match.start())+1 for item in parsed.get('line_items', [])
+                            for match in printed_description(item.get('description'), text)})
     consumed_rows = set()
     for line in parsed.get('line_items', []):
         description = ' '.join(re.findall(r'[A-Z0-9]+', str(line.get('description') or '').upper()))
-        if not description or description not in normalized or amount(line.get('rate')) not in numbers:
+        printed = printed_description(description, text)
+        if not description or not printed or amount(line.get('rate')) not in numbers:
             raise Hold('A charge description or taxable amount is not evidenced in the PDF text.')
         pattern = re.compile(r'\W+'.join(re.findall(r'[A-Z0-9]+', description)), re.I)
         matches = []
-        for match in pattern.finditer(text):
+        for match in printed:
             begin = text.rfind('\n', 0, match.start())+1
-            end = text.find('\n', match.end()); end = len(text) if end < 0 else end
-            values = re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', text[match.end():end])
+            values = re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', text[match.start():row_end(text, match.start())])
             if begin not in consumed_rows and values and Decimal(values[-1].replace(',', '')) == amount(line['rate']):
                 matches = [match]; consumed_rows.add(begin); break
         if not matches:
@@ -446,9 +470,9 @@ def corroborate_source(parsed, text, core):
         charge_windows = []
         for match in matches:
             begin = text.rfind('\n', 0, match.start())+1
-            end = text.find('\n', match.end())
-            end = len(text) if end < 0 else end
-            values = re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', text[match.end():end])
+            end = row_end(text, match.start())
+            charge_row = text[begin:end]
+            values = re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', text[match.start():end])
             if values:
                 bases.append(Decimal(values[-1].replace(',', '')))
             boundary = next((pos for pos in charge_starts if pos > begin), min(len(text), begin+2000))
@@ -476,7 +500,7 @@ def corroborate_source(parsed, text, core):
         for window in charge_windows:
             for row in window.splitlines():
                 printed_codes.update(re.findall(r'\b(?:SAC|HSN)(?:/HSN|/SAC)?\s*[:.]?\s*(\d{4,8})\b', row, re.I))
-                if re.search(r'\b(?:SAC|HSN)\b', text, re.I) and pattern.search(row):
+                if re.search(r'\b(?:SAC|HSN)\b', text, re.I) and (pattern.search(row) or row == charge_row):
                     printed_codes.update(re.findall(r'(?<![\d.,])\b\d{4,8}\b(?![\d.,])', row))
                 taxes = list(re.finditer(r'\b(CGST|SGST|IGST)\s*@?\s*\d+(?:\.\d+)?\s*%', row, re.I))
                 for index, tax in enumerate(taxes):

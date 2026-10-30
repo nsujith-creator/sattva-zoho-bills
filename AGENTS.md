@@ -44,3 +44,7 @@ Completion requires showing which cases passed, which fields were reconciled, an
 ### Owner-approved duplicate penny allocation, 29 October 2026
 
 For duplicate verification only, the owner permits offsetting one-paise line allocations within the SAME GST head and rate when source bases, quantities, descriptions, SAC, vendor registration, tax IDs, every GST-head total and invoice total match exactly. Each line difference is at most one paise; each same-head/rate group must net to zero with complete line evidence. Cross-head/cross-rate offsets, larger differences, missing evidence or any total tolerance remain held. This does not authorize existing-bill edits or relax new-bill read-back. Preserve raw extraction evidence and separately record any PDF-derived reconciliation. Additional AI calls and deployment require their existing approvals.
+
+### Owner-approved Total Transport rounding, 30 October 2026
+
+Total Transport Systems Limited (PAN AAACT3276C) prints per-line rounded GST, while Zoho saves its own rounding. For NEW cloud bills from that supplier only, Zoho's saved tax is accepted as verified when each GST head, the tax total, the payable total and every line tax are within INR 1 of the printed invoice. Taxable subtotal, line amounts, tax IDs, identity, dates and the original-attachment check stay exact. The accepted differences are recorded on the job. Other suppliers keep exact read-back.

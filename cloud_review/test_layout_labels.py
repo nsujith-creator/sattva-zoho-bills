@@ -102,3 +102,30 @@ class SourceRecheck(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class LimitReminders(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); folder = Path(self.tmp.name)
+        db = folder/'review.sqlite3'
+        with contextlib.closing(sqlite3.connect(db)) as conn, conn:
+            conn.execute('CREATE TABLE invoices(id TEXT,filename TEXT,sha256 TEXT,pdf BLOB)')
+        self.engine = a.Engine(db, core_fixture(), FakeAI(invoice()), FakeZoho(folder))
+
+    def tearDown(self):
+        self.engine.close(); self.tmp.cleanup()
+
+    def warnings(self, reserved, days_left):
+        a.atomic(self.engine.folder/'ai-budget.json', {'reserved_usd': reserved, 'calls_reserved': 1})
+        from unittest.mock import patch
+        import os
+        with patch.dict(os.environ, {'APP_AI_BUDGET_USD': '2.00', 'OWNER_INBOX_STOP_AT_EPOCH': str(1000+int(days_left*86400))}):
+            return self.engine.limit_warnings(now=1000)
+
+    def test_no_reminder_while_both_limits_are_comfortable(self):
+        self.assertEqual([], self.warnings('0.50', 30))
+
+    def test_reminders_ten_days_before_window_and_near_budget_end(self):
+        result = self.warnings('1.90', 9)
+        self.assertEqual(2, len(result))
+        self.assertIn('AI budget nearly used', result[0]); self.assertIn('Service window ends', result[1])

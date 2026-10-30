@@ -40,6 +40,28 @@ class LayoutLabels(unittest.TestCase):
             with self.subTest(total=total), self.assertRaises(a.Hold):
                 a.corroborate_source(invoice(), layout_text(total=total), self.core)
 
+    def wrapped(self, description, row, after='    2026'):
+        text = layout_text().replace(
+            ' 1  Documentation          1.00  100.00     9%     9.00    9%     9.00    100.00',
+            row+'\n'+after)
+        reading = invoice(); reading['line_items'][0]['description'] = description
+        return reading, text
+
+    def test_description_joined_from_a_month_column_and_wrapped_year_is_corroborated(self):
+        reading, text = self.wrapped('Documentation charges Oct 2026',
+            ' 1  Documentation charges   Oct   1.00  100.00   9%   9.00   9%   9.00   100.00')
+        self.assertTrue(a.corroborate_source(reading, text, self.core))
+
+    def test_loosely_scattered_or_unprinted_description_words_still_hold(self):
+        row = ' 1  Documentation charges   Oct   1.00  100.00   9%   9.00   9%   9.00   100.00'
+        cases = (('Documentation charges Oct 2026', row, '\n\n\n    2026'),    # too far below the row
+                 ('Documentation charges Nov 2026', row, '    2026'),          # word not printed
+                 ('Documentation fee for Oct 2026', row, '    2026'))         # under half contiguous
+        for description, printed, after in cases:
+            with self.subTest(description=description, after=after), self.assertRaises(a.Hold):
+                reading, text = self.wrapped(description, printed, after)
+                a.corroborate_source(reading, text, self.core)
+
     def test_supplier_gstn_must_still_match_the_reading(self):
         other = copy.deepcopy(invoice()); other['vendor_gstin'] = '27ZZZZZ9999Z1Z9'
         with self.assertRaises(a.Hold):

@@ -130,6 +130,16 @@ class OwnerHTTP(unittest.TestCase):
         self.assertEqual(303,self.request('GET','/invoice/'+'a'*32,headers={'Cookie':cookie})[0])
         self.assertEqual(401,self.request('POST','/api/reviews/'+'a'*32,b'{}',{'Cookie':cookie})[0])
 
+    def test_expired_session_form_buttons_return_to_sign_in_without_acting(self):
+        _,h,_=self.login();cookie=h['Set-Cookie'].split(';')[0]
+        self.server.auth.clock=lambda:10**15
+        form={'Cookie':cookie,'Content-Type':'application/x-www-form-urlencoded'}
+        code,h,_=self.request('POST','/api/retry/'+'a'*32,'csrf=stale',form)
+        self.assertEqual(303,code);self.assertEqual('/login?next=%2Freview%2F'+'a'*32,h['Location'])
+        code,h,_=self.request('POST','/logout','csrf=stale',form)
+        self.assertEqual(303,code);self.assertEqual('/login?next=%2F',h['Location'])
+        self.assertEqual(401,self.request('POST','/api/invoices',b'%PDF-synthetic',{'Cookie':cookie})[0])
+
     def test_login_csrf_and_excessive_requests(self):
         code,_,_=self.request('POST','/login','password='+PASSWORD,{'Content-Type':'application/x-www-form-urlencoded'})
         self.assertEqual(400,code)

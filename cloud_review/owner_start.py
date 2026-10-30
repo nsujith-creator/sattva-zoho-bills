@@ -319,7 +319,7 @@ def prepare_owner():
         raise RuntimeError('Owner startup requires DATA_DIR=/data')
     stop_at = int(os.environ['OWNER_INBOX_STOP_AT_EPOCH'])
     remaining = stop_at - time.time()
-    if not 0 < remaining <= 7 * 86400:
+    if not 0 < remaining <= 100 * 86400:  # Owner-approved window through 31 Jan 2027.
         raise RuntimeError('Approved service window expired or exceeds its bound')
     timer = threading.Timer(remaining, lambda: os._exit(0))
     timer.daemon = True; timer.start()
@@ -363,14 +363,14 @@ def prepare_owner():
     if not shutil.which('pdfinfo') or not shutil.which('pdftotext'):
         raise RuntimeError('Approved PDF readers missing')
     subprocess.run(['pdftotext', '-v'], capture_output=True, timeout=10, check=True)
-    if os.environ['APP_AI_BUDGET_USD'] != '0.50':
+    if os.environ['APP_AI_BUDGET_USD'] != '2.00':
         raise RuntimeError('Unapproved AI allowance')
     os.environ['DATA_DIR'] = str(folder)
     return folder, release, {'release': release, 'uid': os.geteuid(), 'gid': os.getegid(),
                             'owner_directory': str(folder), 'source_sha256': actual,
                             'backup_sha256': hashlib.sha256(backup.read_bytes()).hexdigest(),
                             'backed_up_original_count': count, 'retained_synthetic_hashes': retained,
-                            'stop_at': stop_at, 'posting_enabled': False, 'ai_allowance_usd': '0.50'}
+                            'stop_at': stop_at, 'posting_enabled': False, 'ai_allowance_usd': '2.00'}
 
 
 def main():

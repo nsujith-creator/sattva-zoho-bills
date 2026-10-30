@@ -146,6 +146,8 @@ def template(rows, csrf, total=None, page=1, pages=1, automation=None):
         intro = 'Upload a supplier PDF to run its source checks. Creating bills in Zoho is waiting for release acceptance.'
     if automation and not automation.healthy():
         warning = '<p role="alert">Processing is temporarily unavailable. Saved originals are retained; processing resumes when the service recovers.</p>'
+    if automation and hasattr(automation, 'limit_warnings'):
+        warning += ''.join('<p role="alert" class="limit">'+html.escape(text)+'</p>' for text in automation.limit_warnings())
     footer = 'Original PDFs stay private. Duplicate bills are blocked. Unclear invoices show the reason here instead of being posted.' if automation else 'Review-only prototype. No AI extraction, payment functionality, Zoho authentication or bill-posting endpoints are included. Uploads must remain on a persistent private cloud volume before real invoices are used.'
     maximum = AUTOMATIC_MAX_PDF if automation else MAX_PDF
     max_mb = '5' if automation else '12'

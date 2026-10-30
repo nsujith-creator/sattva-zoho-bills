@@ -412,7 +412,7 @@ class OwnerPackaging(unittest.TestCase):
         fake_app.main.assert_not_called(); fake_app.Server.assert_not_called()
 
     def test_expired_or_extended_window_forces_posting_off_before_volume_access(self):
-        for stop in ('999', str(1000 + 8 * 86400)):
+        for stop in ('999', str(1000 + 101 * 86400)):  # beyond the approved 100-day bound
             with self.subTest(stop=stop), patch.dict(os.environ, {'DATA_DIR': '/data', 'OWNER_INBOX_STOP_AT_EPOCH': stop}), \
                     patch.object(start.time, 'time', return_value=1000), \
                     patch.object(start.container_start, 'prepare_and_drop') as drop:

@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
@@ -28,6 +28,9 @@ MAX_INPUT = 40000
 MAX_PDF = 5_000_000
 TOTAL_TRANSPORT_PAN = 'AAACT3276C'
 TOTAL_TRANSPORT_TOLERANCE = Decimal('1.00')
+AI_BUDGET_CEILING = Decimal('2.00')  # Owner-approved lifetime allowance, 30 Oct 2026.
+REMINDER_DAYS = 10
+REMINDER_BUDGET_USD = Decimal('0.15')  # About ten days of invoices at 10-15 a month.
 MONEY = ('subtotal', 'discounts_or_credits', 'tax_amount_cgst', 'tax_amount_sgst',
          'tax_amount_igst', 'invoice_total')
 TERMINAL = {'verified', 'duplicate', 'needs_review', 'failed', 'validated', 'retryable', 'rejected'}
@@ -666,7 +669,7 @@ class Haiku:
         budget = json.loads(budget_path.read_text())
         maximum = Decimal(os.environ['APP_AI_BUDGET_USD'])
         used = Decimal(budget['reserved_usd'])
-        if not Decimal(0) < maximum <= Decimal('1.00') or used+reserve > maximum:
+        if not Decimal(0) < maximum <= AI_BUDGET_CEILING or used+reserve > maximum:
             raise Hold('Approved AI spending limit reached; original retained.')
         budget['reserved_usd'] = str(used+reserve)
         budget['calls_reserved'] += 1
@@ -1216,6 +1219,28 @@ class Engine:
                 raise Hold('This invoice has no safe retry available.')
             self.save(job, 'queued', retry_count=job.get('retry_count', 0)+1,
                       retry_attempts=0, retry_at=0, message='Retry requested. Retained source readings will be reused.')
+
+    def limit_warnings(self, now=None):
+        # Owner reminder: shown in the inbox ten days before a limit stops uploads.
+        warnings = []
+        try:
+            budget = json.loads((self.folder/'ai-budget.json').read_text())
+            left = Decimal(os.environ['APP_AI_BUDGET_USD']) - Decimal(budget['reserved_usd'])
+            if left < REMINDER_BUDGET_USD:
+                warnings.append('AI budget nearly used: about USD '+str(max(left, Decimal(0)).quantize(Decimal('.01')))
+                                +' left (roughly '+str(max(int(left/Decimal('0.024')), 0))+' invoices). Renew it before uploads are held.')
+        except (OSError, ValueError, KeyError, InvalidOperation):
+            warnings.append('AI budget status is unreadable. Check it before relying on new uploads.')
+        try:
+            days = (int(os.environ['OWNER_INBOX_STOP_AT_EPOCH']) - (now or time.time())) / 86400
+            if days < REMINDER_DAYS:
+                stop = datetime.fromtimestamp(int(os.environ['OWNER_INBOX_STOP_AT_EPOCH']), timezone.utc).astimezone(
+                    timezone(timedelta(hours=5, minutes=30)))
+                warnings.append('Service window ends '+stop.strftime('%d %b %Y, %I:%M %p IST')+' (in '+str(max(int(days), 0))
+                                +' days). Renew it before uploads stop.')
+        except (KeyError, ValueError):
+            pass
+        return warnings
 
     def healthy(self):
         return bool(getattr(self, 'worker', None) and self.worker.is_alive() and not self.worker_error)

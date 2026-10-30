@@ -16,6 +16,10 @@ Any invoice billed to GSTIN 27AEFPN9399L1ZI belongs in Sattva's business-expense
 
 ## Required constraints
 
+### Owner-authorized cloud automatic processing, 28 October 2026
+
+The owner explicitly instructed: cloud browser upload → Haiku parsing → automatic Zoho posting, with no manual re-entry or laptop step. For that cloud journey, this later instruction authorizes conditional automatic creation after source checks, exact vendor registration, arithmetic/tax validation, duplicate checks and durable source/payload journaling. It supersedes the per-invoice approval requirement for qualifying new cloud uploads only. It does not authorize bulk historical processing, existing-bill edits, vendor-master changes, invented FX or tax decisions, payments, or exceeding the existing spending ceiling. Extraction alone never authorizes posting. Failed or ambiguous checks hold the invoice with its reason. Completion requires exact Zoho read-back and original-PDF verification. The Windows workflow retains its existing approval behavior.
+
 - Never auto-post a vendor bill solely because extraction completed.
 - Preserve duplicate detection and idempotency.
 - Reconcile invoice number, vendor, date, taxable amount, tax components, total, currency, and source document.
@@ -35,3 +39,8 @@ For extraction or posting changes, test representative cases:
 6. Retry after partial failure.
 
 Completion requires showing which cases passed, which fields were reconciled, and that no bill was posted without the required approval boundary.
+
+
+### Owner-approved duplicate penny allocation, 29 October 2026
+
+For duplicate verification only, the owner permits offsetting one-paise line allocations within the SAME GST head and rate when source bases, quantities, descriptions, SAC, vendor registration, tax IDs, every GST-head total and invoice total match exactly. Each line difference is at most one paise; each same-head/rate group must net to zero with complete line evidence. Cross-head/cross-rate offsets, larger differences, missing evidence or any total tolerance remain held. This does not authorize existing-bill edits or relax new-bill read-back. Preserve raw extraction evidence and separately record any PDF-derived reconciliation. Additional AI calls and deployment require their existing approvals.

@@ -1,0 +1,12 @@
+*
+!cloud_review/
+!cloud_review/Dockerfile
+!cloud_review/app.py
+!cloud_review/review.py
+!cloud_review/extraction.py
+!cloud_review/auth.py
+!cloud_review/container_start.py
+!cloud_review/automation.py
+!cloud_review/owner_start.py
+!src/
+!src/zoho_bills.py

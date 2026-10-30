@@ -26,6 +26,8 @@ POLICY = 'owner-cloud-automatic-posting-2026-10-28'
 MAX_OUTPUT = 6000
 MAX_INPUT = 40000
 MAX_PDF = 5_000_000
+TOTAL_TRANSPORT_PAN = 'AAACT3276C'
+TOTAL_TRANSPORT_TOLERANCE = Decimal('1.00')
 MONEY = ('subtotal', 'discounts_or_credits', 'tax_amount_cgst', 'tax_amount_sgst',
          'tax_amount_igst', 'invoice_total')
 TERMINAL = {'verified', 'duplicate', 'needs_review', 'failed', 'validated', 'retryable', 'rejected'}
@@ -1001,7 +1003,7 @@ def verify_detail(core, bid, payload, parsed, detail, owned=True):
         check['errors'].append('existing_bill_is_void')
     if len(detail.get('line_items', [])) != len(payload['line_items']):
         check['errors'].append('line_count_mismatch')
-    allocation_groups, allocation_differences = {}, []
+    allocation_groups, allocation_differences, line_tax_deltas = {}, [], []
     complete_line_taxes = len(detail.get('line_items', [])) == len(payload['line_items'])
     for sent, saved, source in zip(payload['line_items'], detail.get('line_items', []), parsed['line_items']):
         for field in ('rate', 'quantity'):
@@ -1064,6 +1066,8 @@ def verify_detail(core, bid, payload, parsed, detail, owned=True):
                         allocation_differences.append((head, actual-printed))
                 elif actual != expected_head or (source.get(head) is not None and actual != printed):
                     check['errors'].append('line_'+head+'_mismatch')
+                    if charged:
+                        line_tax_deltas.append((head, max(abs(actual-expected_head), abs(actual-printed))))
                 if not charged and actual:
                     check['errors'].append('line_'+head+'_mismatch')
     if not owned and allocation_differences:
@@ -1073,8 +1077,35 @@ def verify_detail(core, bid, payload, parsed, detail, owned=True):
             check['duplicate_allocation_policy'] = 'owner-net-zero-penny-same-gst-head-rate-2026-10-29'
         else:
             check['errors'].extend('line_'+head+'_mismatch' for head, _ in allocation_differences)
+    if owned and str(parsed.get('vendor_gstin') or '').upper()[2:12] == TOTAL_TRANSPORT_PAN:
+        accept_zoho_tax_rounding(check, line_tax_deltas)
     check['ok'] = not check['errors']
     return check
+
+
+def accept_zoho_tax_rounding(check, line_tax_deltas):
+    # Owner rule 30 Oct 2026, Total Transport only: Total prints per-line rounded GST
+    # and Zoho saves its own rounding. Accept Zoho's saved tax when every tax head,
+    # the tax total, the payable total and each line tax are within INR 1 of the
+    # printed figures. Subtotal, line amounts, tax IDs and identity stay exact.
+    differences = {}
+    for name in ('tax_total', 'tax_amount_cgst', 'tax_amount_sgst', 'tax_amount_igst', 'total'):
+        item = check['checks'].get(name)
+        if item and not item['ok']:
+            if item['expected'] is None or item['actual'] is None:
+                return
+            differences[name] = abs(Decimal(str(item['actual'])) - Decimal(str(item['expected'])))
+    if not differences and not line_tax_deltas:
+        return
+    if any(delta > TOTAL_TRANSPORT_TOLERANCE for delta in differences.values()) or any(delta > TOTAL_TRANSPORT_TOLERANCE for _, delta in line_tax_deltas):
+        return
+    for name in differences:
+        check['errors'] = [e for e in check['errors'] if not e.startswith(name+'_mismatch')]
+    for head, _ in line_tax_deltas:
+        check['errors'].remove('line_'+head+'_mismatch')
+    check['vendor_rounding_policy'] = {'policy': 'owner-total-transport-zoho-rounding-within-inr-1-2026-10-30',
+                                       'accepted_differences': {k: str(v) for k, v in differences.items()},
+                                       'line_tax_differences': [[h, str(d)] for h, d in line_tax_deltas]}
 
 
 class Engine:

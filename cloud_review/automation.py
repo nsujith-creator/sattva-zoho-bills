@@ -22,6 +22,7 @@ from pathlib import Path
 
 MODEL = 'claude-haiku-4-5'
 OWNER_GSTIN = '27AEFPN9399L1ZI'
+OIDAR = r'99\d{2}[A-Z]{3}\d{5}OS[A-Z]'  # India OIDAR registration of an overseas supplier.
 POLICY = 'owner-cloud-automatic-posting-2026-10-28'
 MAX_OUTPUT = 6000
 MAX_INPUT = 40000
@@ -33,7 +34,13 @@ REMINDER_DAYS = 10
 REMINDER_BUDGET_USD = Decimal('0.15')  # About ten days of invoices at 10-15 a month.
 MONEY = ('subtotal', 'discounts_or_credits', 'tax_amount_cgst', 'tax_amount_sgst',
          'tax_amount_igst', 'invoice_total')
-TERMINAL = {'verified', 'duplicate', 'needs_review', 'failed', 'validated', 'retryable', 'rejected'}
+TERMINAL = {'verified', 'duplicate', 'needs_review', 'failed', 'validated', 'retryable', 'rejected', 'needs_bank_amounts'}
+# Owner rule 3 Nov 2026: an overseas service invoice printed only in foreign currency is
+# booked in INR from the owner's two bank debits (transaction and bank charges).
+BANK_RATE_BOUNDS = {'USD': (Decimal(70), Decimal(130)), 'EUR': (Decimal(75), Decimal(150)),
+                    'GBP': (Decimal(90), Decimal(170))}
+BANK_CHARGE_LINE = 'Bank charges on foreign-currency payment'
+EXPENSE_ACCOUNT = '914109000000000567'  # The account every cloud bill line already uses.
 SCHEMA = '''{"vendor_name":"printed supplier name","vendor_gstin":"printed supplier GSTIN or empty",
 "buyer_gstin":"printed buyer GSTIN or empty","bill_number":"printed invoice number",
 "bill_date":"YYYY-MM-DD","due_date":null,"currency_code":"INR","is_overseas":false,
@@ -63,6 +70,10 @@ No account choices, tax eligibility decisions, or permission to post are request
 
 
 class Hold(ValueError):
+    pass
+
+
+class NeedsBankAmounts(Hold):
     pass
 
 
@@ -110,7 +121,8 @@ def printed_date_forms(value):
         raise Hold('Extracted date is invalid.') from exc
     return [value.isoformat(), value.strftime('%d/%m/%Y'), value.strftime('%d-%m-%Y'),
             value.strftime('%d-%b-%Y'), value.strftime('%b %d, %Y'), value.strftime('%d %b %Y'),
-            value.strftime('%d-%b-%y'), value.strftime('%b')+' '+str(value.day)+', '+str(value.year)]
+            value.strftime('%d-%b-%y'), value.strftime('%b')+' '+str(value.day)+', '+str(value.year),
+            value.strftime('%B')+' '+str(value.day)+', '+str(value.year)]
 
 
 def printed_buyer_registrations(text, party='buyer'):
@@ -120,7 +132,7 @@ def printed_buyer_registrations(text, party='buyer'):
     selected_roles = ({'BUYER', 'BILL TO', 'BILLED TO', 'INVOICE TO', 'RECIPIENT', 'CUSTOMER'} if party == 'buyer'
                       else {'SUPPLIER', 'SELLER', 'PAYABLE TO', 'SERVICE PROVIDER'} if party == 'supplier'
                       else {'SHIPPER', 'CONSIGNEE'})
-    registration = re.compile(r'(?:GST(?:IN|N|\s*(?:No\.?|Number))|Tax\s+id\.?\s*no\.?)\s*[:.]?\s*(\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z0-9]{2})\b', re.I)
+    registration = re.compile(r'(?:(?:IN\s+)?GST(?:IN|N|\s*(?:No\.?|Number))?|Tax\s+id\.?\s*no\.?)\s*[:.]?\s*(\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z0-9]{2})\b', re.I)
     rows = text.splitlines(); found = set()
     for index, row in enumerate(rows):
         labels = list(roles.finditer(row))
@@ -364,7 +376,17 @@ def corroborate_source(parsed, text, core):
             raise Hold('Printed '+key.replace('_', ' ')+' differs from the PDF text.')
     if not parsed.get('buyer_gstin') or printed_buyer_registrations(text) != {parsed['buyer_gstin']}:
         raise Hold('The buyer GSTIN is not uniquely evidenced in the printed buyer block.')
-    if parsed.get('vendor_gstin'):
+    if re.fullmatch(OIDAR, str(parsed.get('vendor_gstin') or '').upper()):
+        # Overseas OIDAR registration (e.g. 9924USA29003OSI): one printed value, under a GST label.
+        rows = text.splitlines(); oidar = set()
+        for index, row in enumerate(rows):
+            for match in re.finditer(r'\b'+OIDAR+r'\b', row.upper()):
+                above = next((r for r in reversed(rows[max(0, index-2):index]) if r.strip()), '')
+                if re.search(r'\bGST\b', row[:match.start()], re.I) or re.search(r'\bGST(?:IN)?\b\s*:?\s*$', above, re.I):
+                    oidar.add(match[0])
+        if set(re.findall(r'\b'+OIDAR+r'\b', text.upper())) != oidar or oidar != {parsed['vendor_gstin'].upper()}:
+            raise Hold('Supplier overseas GST registration is not uniquely evidenced under its printed GST label.')
+    elif parsed.get('vendor_gstin'):
         supplier_regs = printed_buyer_registrations(text, 'supplier')
         supplier_label = re.search(r'\b(?:Supplier|Seller|Payable\s+to|Service\s+Provider)(?=\s*:|\s+GSTIN\b|\s*$)', text, re.I|re.M)
         if not supplier_regs and not supplier_label:
@@ -388,7 +410,7 @@ def corroborate_source(parsed, text, core):
     generic_dates = []
     source_rows = text.splitlines()
     for index, row in enumerate(source_rows):
-        match = re.search(r'\binvoice\s+date\s*:?\s*(.+)', row, re.I)
+        match = re.search(r'\b(?:invoice\s+date|date\s+of\s+issue)\s*:?\s*(.+)', row, re.I)
         if match:
             labelled_dates.append(match[1].strip().upper())
         else:
@@ -399,13 +421,13 @@ def corroborate_source(parsed, text, core):
     if not candidates or not all(any(value.startswith(d.upper()) for d in dates) for value in candidates):
         raise Hold('The labelled invoice date differs from the extracted date.')
     due_labels = [m[1].strip().upper() for row in text.splitlines()
-                  if (m := re.search(r'\b(?:due[ \t]+date|payable[ \t]+by)\b[ \t]*:?[ \t]*(.*)', row, re.I))]
+                  if (m := re.search(r'\b(?:due[ \t]+date|date[ \t]+due|payable[ \t]+by)\b[ \t]*:?[ \t]*(.*)', row, re.I))]
     if due_labels and not parsed.get('due_date'):
         raise Hold('A printed due date was omitted by the source readings; nothing posted.')
     if parsed.get('due_date') is not None:
         due_forms = printed_date_forms(parsed['due_date'])
         due_rows = [value for value in due_labels
-                    if re.match(r'(?:\d|Jan\b|Feb\b|Mar\b|Apr\b|May\b|Jun\b|Jul\b|Aug\b|Sep\b|Oct\b|Nov\b|Dec\b)', value, re.I)]
+                    if re.match(r'(?:\d|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b)', value, re.I)]
         if not due_rows or not all(any(value.startswith(d.upper()) for d in due_forms) for value in due_rows):
             raise Hold('The extracted due date is not evidenced by the printed payment deadline.')
     numbers = {Decimal(x.replace(',', '')) for x in re.findall(r'(?<![\w.])\d[\d,]*\.\d{2}(?!\d)', text)}
@@ -430,7 +452,7 @@ def corroborate_source(parsed, text, core):
             raise Hold('Printed '+key.replace('_', ' ')+' is not evidenced in the PDF text.')
     # Header labels distinguish the payable from other perfectly plausible printed amounts.
     labels = {'subtotal': r'(?:sub\s*total|total\s+base\s+amount|total\s+excluding\s+tax)',
-              'invoice_total': r'(?:grand\s+total|total\s+payable\s+amount|total\s+including\s+tax|invoice\s+total|(?<!sub\s)(?<!sub)\btotal(?=\s+(?:₹|rs\.?\s*|inr\s*)\d))',
+              'invoice_total': r'(?:grand\s+total|total\s+payable\s+amount|total\s+including\s+tax|invoice\s+total|(?<!sub\s)(?<!sub)\btotal(?=\s+(?:₹|rs\.?\s*|inr\s*|\$\s*)\d))',
               'tax_amount_cgst': r'(?:C[- ]?GST\s+Total\s+taxes|Total\s+CGST|^\s*CGST\b)',
               'tax_amount_sgst': r'(?:S[- ]?GST\s+Total\s+taxes|Total\s+SGST|^\s*SGST\b)',
               'tax_amount_igst': r'(?:I[- ]?GST\s+Total\s+taxes|Total\s+IGST|^\s*IGST\b)'}
@@ -502,7 +524,7 @@ def corroborate_source(parsed, text, core):
         printed_taxes = {'cgst': set(), 'sgst': set(), 'igst': set()}
         for window in charge_windows:
             for row in window.splitlines():
-                printed_codes.update(re.findall(r'\b(?:SAC|HSN)(?:/HSN|/SAC)?\s*[:.]?\s*(\d{4,8})\b', row, re.I))
+                printed_codes.update(re.findall(r'\b(?:SAC|HSN)(?:/HSN|/SAC)?(?:\s+code)?\s*[:.]?\s*(\d{4,8})\b', row, re.I))
                 if re.search(r'\b(?:SAC|HSN)\b', text, re.I) and (pattern.search(row) or row == charge_row):
                     printed_codes.update(re.findall(r'(?<![\d.,])\b\d{4,8}\b(?![\d.,])', row))
                 taxes = list(re.finditer(r'\b(CGST|SGST|IGST)\s*@?\s*\d+(?:\.\d+)?\s*%', row, re.I))
@@ -536,7 +558,7 @@ def corroborate_source(parsed, text, core):
     for row in text.splitlines():
         for match in re.finditer(r'\binvoice\s+currency\s*[:(]?\s*([A-Z]{3})\b|^\s*(?:payable\s+)?currency\s*[:(]?\s*([A-Z]{3})\b', row, re.I):
             currencies.add((match[1] or match[2]).upper())
-        match = re.search(r'\b(?:grand\s+total|total\s+payable\s+amount|invoice\s+total|total\s+amount)\b(.*)', row, re.I)
+        match = re.search(r'\b(?:grand\s+total|total\s+payable\s+amount|invoice\s+total|total\s+amount|amount\s+due)\b(.*)', row, re.I)
         if match:
             currencies.update(re.findall(r'\b[A-Z]{3}\b', match[1]))
         rupee_total = re.search(r'(?<!sub\s)(?<!sub)\btotal\s+₹\s*\d(.*)', row, re.I)
@@ -912,7 +934,37 @@ def select_tax_calculation(parsed, payload, route, legacy):
     return 'item' if payload['is_item_level_tax_calc'] else 'group'
 
 
-def validate(parsed, core, vendors, check_zoho_rounding=True):
+def bank_booking(parsed, bank):
+    """INR copy of a foreign-currency overseas invoice, from the owner's bank debits.
+    Lines are scaled so they sum exactly to the payment debit; the last line takes
+    the rounding. Printed foreign amounts stay on the job and in the bill notes."""
+    currency = parsed['currency_code'].upper()
+    if currency not in BANK_RATE_BOUNDS:
+        raise Hold('Bank-debit booking supports USD, EUR and GBP invoices only; '+currency+' needs review.')
+    foreign, payment, charges = amount(parsed['invoice_total']), amount(bank['transaction_inr']), amount(bank['charges_inr'])
+    if any(amount(parsed[k]) for k in ('tax_amount_cgst', 'tax_amount_sgst', 'tax_amount_igst')) or amount(parsed['subtotal']) != foreign:
+        raise Hold('Overseas invoice prints tax or adjustments; bank-debit booking needs review.')
+    low, high = BANK_RATE_BOUNDS[currency]
+    rate = payment/foreign
+    if not low <= rate <= high:
+        raise NeedsBankAmounts('The payment debit gives '+str(rate.quantize(Decimal('.0001')))+' INR per '+currency
+                               +', outside '+str(low)+'-'+str(high)+'. Check the amounts and enter them again.')
+    if charges < 0 or charges > payment/10:
+        raise NeedsBankAmounts('Bank charges must be between 0 and 10% of the payment debit. Check and enter them again.')
+    booking = copy.deepcopy(parsed)
+    lines, running = booking['line_items'], Decimal(0)
+    for index, line in enumerate(lines):
+        value = payment-running if index == len(lines)-1 else (amount(line['rate'])*payment/foreign).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+        if value <= 0:
+            raise Hold('A converted invoice line is not positive; bank-debit booking needs review.')
+        line['rate'] = str(value); running += value
+    booking.update(currency_code='INR', subtotal=str(payment), invoice_total=str(payment),
+                   bank_note='Original '+currency+' '+str(foreign)+' paid by bank debit INR '+str(payment)
+                   +' (effective '+str(rate.quantize(Decimal('.0001')))+' INR/'+currency+'); bank charges INR '+str(charges)+'.')
+    return booking
+
+
+def validate(parsed, core, vendors, check_zoho_rounding=True, bank=None):
     if parsed.get('confidence') != 'high' or parsed.get('issues') not in ([], '', None):
         raise Hold('Source is unclear: '+str(parsed.get('issues') or 'low confidence')[:300])
     if parsed.get('multi_invoice_count') != 1:
@@ -958,6 +1010,14 @@ def validate(parsed, core, vendors, check_zoho_rounding=True):
     if sum(amount(parsed[k]) for k in ('subtotal', 'tax_amount_cgst', 'tax_amount_sgst', 'tax_amount_igst')) != amount(parsed['invoice_total']):
         raise Hold('Printed GST components and invoice total differ.')
     vid, name, match, gst = core.match_vendor_tiered(parsed['vendor_name'], vendors, parsed.get('vendor_gstin'))
+    if (not vid or match not in ('exact', 'alias')) and parsed['currency_code'] != 'INR':
+        # Overseas suppliers print a legal form ("Anthropic, PBC", "OpenAI, LLC") that the
+        # Zoho vendor name may omit. Retry once on the exact name without that suffix.
+        short = re.sub(r'(?:[\s,.]+(?:PBC|INC|LLC|LTD|LIMITED|CORP|CORPORATION|PTE|GMBH|PLC))+\.?\s*$', '', parsed['vendor_name'], flags=re.I)
+        if short.strip() and short != parsed['vendor_name']:
+            retried = core.match_vendor_tiered(short, vendors, parsed.get('vendor_gstin'))
+            if retried[0] and retried[2] in ('exact', 'alias'):
+                vid, name, match, gst = retried
     if not vid or match not in ('exact', 'alias', 'gstin'):
         raise Hold('Supplier registration is missing or ambiguous: '+str(match))
     route = core.determine_tax_route(parsed, name, gst)
@@ -967,12 +1027,23 @@ def validate(parsed, core, vendors, check_zoho_rounding=True):
         raise Hold('A printed supplier GSTIN matching the unique vendor registration is required.')
     if str(parsed.get('vendor_gstin') or '').upper() == OWNER_GSTIN:
         raise Hold('Supplier and buyer registrations cannot be the same.')
+    booking = parsed
     if parsed['currency_code'] != 'INR':
-        raise Hold('Foreign-currency posting needs the approved accounting rate.')
+        if route['is_overseas'] is not True:
+            raise Hold('Foreign-currency posting needs the approved accounting rate.')
+        if not bank:
+            raise NeedsBankAmounts('Overseas invoice in '+parsed['currency_code']+' with no INR shown. Enter the two bank debits (payment and bank charges) to book it in INR.')
+        booking = bank_booking(parsed, bank)
     try:
-        payload = core.build_payload(parsed, vid, route)
+        payload = core.build_payload(booking, vid, route)
     except (ValueError, TypeError) as exc:
         raise Hold('Invoice line or tax mapping needs review: '+str(exc)[:180]) from exc
+    if booking is not parsed:
+        charges = amount(bank['charges_inr'])
+        if charges:
+            payload['line_items'].append({'description': BANK_CHARGE_LINE, 'quantity': 1,
+                                          'rate': float(charges), 'account_id': EXPENSE_ACCOUNT})
+        payload['notes'] = booking['bank_note']+(' '+payload['notes'] if payload['notes'] else '')
     check = core.reconcile_payload_taxes(parsed, payload, route)
     if route['is_overseas']:
         if not check['ok']:
@@ -1014,7 +1085,9 @@ def source_signature(parsed):
     return values
 
 
-def verify_detail(core, bid, payload, parsed, detail, owned=True):
+def verify_detail(core, bid, payload, parsed, detail, owned=True, bank=None):
+    if bank is not None:
+        return verify_bank_detail(core, bid, payload, parsed, detail, owned, bank)
     # Fetch once before entering the legacy verifier so transport errors remain retryable.
     expected = dict(payload)
     if not owned:
@@ -1034,7 +1107,9 @@ def verify_detail(core, bid, payload, parsed, detail, owned=True):
     for field in ('notes', 'reference_number', 'due_date') if owned else ():
         if field in payload and detail.get(field) != payload[field]:
             check['errors'].append(field+'_mismatch')
-    if parsed.get('vendor_gstin') and detail.get('gst_no') != parsed['vendor_gstin']:
+    oidar_unregistered = re.fullmatch(OIDAR, str(parsed.get('vendor_gstin') or '').upper()) and not detail.get('gst_no')
+    if parsed.get('vendor_gstin') and detail.get('gst_no') != parsed['vendor_gstin'] and not oidar_unregistered:
+        # An overseas vendor holds no Indian GSTIN in Zoho; its printed OIDAR number stays on the attached original.
         check['errors'].append('supplier_registration_mismatch')
     if str(detail.get('status', '')).lower() in ('void', 'cancelled'):
         check['errors'].append('existing_bill_is_void')
@@ -1116,6 +1191,46 @@ def verify_detail(core, bid, payload, parsed, detail, owned=True):
             check['errors'].extend('line_'+head+'_mismatch' for head, _ in allocation_differences)
     if owned and str(parsed.get('vendor_gstin') or '').upper()[2:12] == TOTAL_TRANSPORT_PAN:
         accept_zoho_tax_rounding(check, line_tax_deltas)
+    check['ok'] = not check['errors']
+    return check
+
+
+def verify_bank_detail(core, bid, payload, parsed, detail, owned, bank):
+    # The reverse-charge verifier checks the service lines against the INR booking.
+    # The bank-charge line carries no GST or reverse charge and is checked exactly here.
+    booking = bank_booking(parsed, bank)
+    charges = amount(bank['charges_inr'])
+    lines = detail.get('line_items')
+    if not isinstance(lines, list):
+        raise ProviderError('Zoho read-back lines are incomplete; retained bill will be read again.', retryable=True)
+    service, saved = dict(payload), dict(detail)
+    errors = []
+    if charges:
+        if len(lines) != len(payload['line_items']) or not isinstance(lines[-1], dict):
+            errors.append('bank_charge_line_missing')
+        else:
+            line = lines[-1]
+            service['line_items'] = payload['line_items'][:-1]
+            saved['line_items'] = lines[:-1]
+            for field in ('sub_total', 'total'):
+                try:
+                    saved[field] = str(Decimal(str(detail.get(field)))-charges)
+                except (InvalidOperation, ValueError, TypeError):
+                    saved[field] = None
+            try:
+                exact = Decimal(str(line.get('rate')))*Decimal(str(line.get('quantity'))) == charges
+            except (InvalidOperation, ValueError, TypeError):
+                exact = False
+            if not exact or str(line.get('description') or '') != BANK_CHARGE_LINE or str(line.get('account_id') or '') != EXPENSE_ACCOUNT:
+                errors.append('bank_charge_line_mismatch')
+            if line.get('tax_id') or line.get('reverse_charge_tax_id') or any(amount(line.get(k) or 0) for k in ('tax_amount', 'reverse_charge_tax_amount')):
+                errors.append('bank_charge_line_taxed')
+    check = verify_detail(core, bid, service, booking, saved, owned)
+    check['errors'].extend(errors)
+    if str(detail.get('currency_code', '')).upper() != 'INR':
+        check['errors'].append('currency_code_mismatch')
+    check['bank_debit'] = {'transaction_inr': str(amount(bank['transaction_inr'])), 'charges_inr': str(charges),
+                           'original': parsed['currency_code']+' '+str(amount(parsed['invoice_total']))}
     check['ok'] = not check['errors']
     return check
 
@@ -1220,6 +1335,25 @@ class Engine:
             self.save(job, 'queued', retry_count=job.get('retry_count', 0)+1,
                       retry_attempts=0, retry_at=0, message='Retry requested. Retained source readings will be reused.')
 
+    def set_bank_debit(self, doc_id, transaction, charges):
+        # Owner-entered bank debits for a foreign-currency overseas invoice. Readings are
+        # reused; nothing is created until the converted bill passes every check.
+        values = []
+        for value in (transaction, charges):
+            text = str(value or '').replace(',', '').strip()
+            if not re.fullmatch(r'\d{1,9}(?:\.\d{1,2})?', text):
+                raise Hold('Enter both bank amounts in rupees, for example 950.45 and 39.24.')
+            values.append(Decimal(text).quantize(Decimal('.01')))
+        if not values[0]:
+            raise Hold('The payment debit must be more than zero.')
+        with self.state_lock:
+            job = self.read(doc_id)
+            if not job or job['status'] != 'needs_bank_amounts' or job.get('create_attempted') or job.get('bill_id') or job.get('payload_sha256'):
+                raise Hold('This invoice is not waiting for bank amounts.')
+            self.save(job, 'queued', bank_debit={'transaction_inr': str(values[0]), 'charges_inr': str(values[1]),
+                                                 'entered_at': datetime.now(timezone.utc).isoformat()},
+                      retry_attempts=0, retry_at=0, message='Bank amounts saved. Converting to INR and checking before creating the bill.')
+
     def limit_warnings(self, now=None):
         # Owner reminder: shown in the inbox ten days before a limit stops uploads.
         warnings = []
@@ -1301,13 +1435,14 @@ class Engine:
                         vendors[name].setdefault('duplicates', []).append(entry)
                     else:
                         vendors[name] = entry
-                payload = validate(parsed, core, vendors, check_zoho_rounding=False)
+                bank = job.get('bank_debit')
+                payload = validate(parsed, core, vendors, check_zoho_rounding=False, bank=bank)
                 marker = 'Sattva source SHA256 '+row[1]+'; upload '+doc_id
                 # Persisted create_attempted survives an explicit retry or a missing response.
                 recovering = bool(job.get('bill_id') or job.get('create_attempted') or job.get('resume_from') in ('posting', 'created', 'attaching', 'reconcile_pending'))
                 existing = {'bill_id': job['bill_id']} if job.get('bill_id') else zoho.find(payload['vendor_id'], payload['bill_number'])
                 if recovering or not existing:
-                    payload = validate(parsed, core, vendors)
+                    payload = validate(parsed, core, vendors, bank=bank)
                 payload['notes'] = str(payload.get('notes') or '')+'\n'+marker
                 if job.get('payload') and payload != job['payload']:
                     raise Hold('Supplier or proposed bill changed after the previous attempt.')
@@ -1321,7 +1456,7 @@ class Engine:
                             raise Hold('Matching bill is not proven to belong to this upload; no record changed.')
                         self.save(job, 'created', bill_id=bid, message='Checking the existing created record.')
                     else:
-                        check = verify_detail(core, bid, payload, parsed, detail, owned=False)
+                        check = verify_detail(core, bid, payload, parsed, detail, owned=False, bank=bank)
                         self.save(job, 'validating', verification=check, bill_id=bid)
                         if not check['ok']:
                             raise Hold('Same invoice number, different or unverified Zoho record: '+'; '.join(check['errors'])[:400])
@@ -1357,7 +1492,7 @@ class Engine:
                         return
                     self.save(job, 'created', bill_id=bid, message='Reading the saved Zoho record back.')
                     detail = zoho.call('bills/'+bid)['bill']
-                check = verify_detail(core, bid, payload, parsed, detail)
+                check = verify_detail(core, bid, payload, parsed, detail, bank=bank)
                 self.save(job, 'created', verification=check)
                 if not check['ok']:
                     raise Hold('Zoho read-back differs: '+'; '.join(check['errors'])[:500])
@@ -1384,6 +1519,8 @@ class Engine:
                           resume_from='created' if job.get('bill_id') else ('reconcile_pending' if job.get('create_attempted') else stage),
                           retry_attempts=attempts, retry_at=time.time()+min(2**attempts, 30) if automatic else 0,
                           message=str(exc)+(' Retrying the safe read.' if automatic else ''))
+            except NeedsBankAmounts as exc:
+                self.save(job, 'needs_bank_amounts', message=str(exc))
             except Hold as exc:
                 self.save(job, 'needs_review', message=str(exc))
             except Exception:
@@ -1446,6 +1583,14 @@ def render_status(doc_id, filename, job, csrf=''):
         link = '<p><a href="'+root+'#/bills/'+esc(job['bill_id'])+'" target="_blank" rel="noopener">Open Zoho bill ↗</a></p>'
     if (job['status'] == 'retryable' or source_recheck_allowed(job)) and csrf:
         link += '<form method="post" action="/api/retry/'+esc(doc_id)+'"><input type="hidden" name="csrf" value="'+esc(csrf)+'"><button type="submit">Retry processing</button><p>Completed readings are reused. A missing reading uses the remaining approved AI budget. An uncertain create is only looked up.</p></form>'
+    if job['status'] == 'needs_bank_amounts' and csrf:
+        entered = job.get('bank_debit') or {}
+        field = lambda name, label, value: ('<p><label>'+label+'<br><input name="'+name+'" inputmode="decimal" required pattern="[0-9,]+(\\.[0-9]{1,2})?" value="'
+                                            +esc(value)+'" style="font:inherit;padding:8px;width:12em"></label></p>')
+        link += ('<form method="post" action="/api/bank-debit/'+esc(doc_id)+'"><input type="hidden" name="csrf" value="'+esc(csrf)+'">'
+                 +field('transaction', 'Bank debit for the payment (INR)', entered.get('transaction_inr', ''))
+                 +field('charges', 'Bank charges / forex markup (INR, 0 if none)', entered.get('charges_inr', ''))
+                 +'<button type="submit">Book in INR</button><p>Copy both amounts exactly from the bank statement. The bill is booked in INR: the service at the payment debit with reverse charge, plus a separate bank-charges line with no GST.</p></form>')
     fields = job.get('parsed') or {}
     rows = ''.join('<tr><th>'+esc(k.replace('_', ' '))+'</th><td>'+esc(fields[k])+'</td></tr>'
                    for k in ('vendor_name','vendor_gstin','bill_number','bill_date','currency_code',*MONEY) if k in fields)

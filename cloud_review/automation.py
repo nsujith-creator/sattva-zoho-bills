@@ -452,7 +452,7 @@ def corroborate_source(parsed, text, core):
             raise Hold('Printed '+key.replace('_', ' ')+' is not evidenced in the PDF text.')
     # Header labels distinguish the payable from other perfectly plausible printed amounts.
     labels = {'subtotal': r'(?:sub\s*total|total\s+base\s+amount|total\s+excluding\s+tax)',
-              'invoice_total': r'(?:grand\s+total|total\s+payable\s+amount|total\s+including\s+tax|invoice\s+total|(?<!sub\s)(?<!sub)\btotal(?=\s+(?:₹|rs\.?\s*|inr\s*|\$\s*)\d))',
+              'invoice_total': r'(?:grand\s+total|total\s+payable\s+amount|total\s+including\s+tax|invoice\s+total|(?<!sub\s)(?<!sub)\btotal(?=\s+(?:₹|rs\.?\s*|inr\s*|\$\s*)\d)|(?<!sub\s)(?<!sub)\btotal\s+in\s+inr(?=\s+₹?\s*\d))',
               'tax_amount_cgst': r'(?:C[- ]?GST\s+Total\s+taxes|Total\s+CGST|^\s*CGST\b)',
               'tax_amount_sgst': r'(?:S[- ]?GST\s+Total\s+taxes|Total\s+SGST|^\s*SGST\b)',
               'tax_amount_igst': r'(?:I[- ]?GST\s+Total\s+taxes|Total\s+IGST|^\s*IGST\b)'}
@@ -460,8 +460,9 @@ def corroborate_source(parsed, text, core):
         values = []
         for line in text.splitlines():
             # A whole row such as "CGST9 (9%)   450.00" is a tax-head summary line.
+            names = {'igst': r'(?:IGST\d*|Integrated\s+GST)', 'cgst': r'(?:CGST\d*|Central\s+GST)', 'sgst': r'(?:SGST\d*|State\s+GST)'}
             summary = key.startswith('tax_amount_') and re.fullmatch(
-                r'\s*'+key[-4:]+r'\d+(?:\.\d+)?\s*\(\d+(?:\.\d+)?%\)\s+(?:₹|Rs\.?)?\s*(\d[\d,]*\.\d{2})\s*', line, re.I)
+                r'\s*(?:'+key[-4:]+r'\d+(?:\.\d+)?|'+names[key[-4:]]+r')\s*\(\d+(?:\.\d+)?%\)\s+(?:₹|Rs\.?)?\s*(\d[\d,]*\.\d{2})\s*', line, re.I)
             if summary:
                 values.append(Decimal(summary[1].replace(',', '')))
                 continue
@@ -503,8 +504,9 @@ def corroborate_source(parsed, text, core):
             boundary = next((pos for pos in charge_starts if pos > begin), min(len(text), begin+2000))
             window = text[begin:boundary]
             charge_windows.append(window)
-            for head, value in re.findall(r'(CGST|SGST|IGST)(?:\s*@?\s*|\d+(?:\.\d+)?\s*\(\s*)(\d+(?:\.\d+)?)\s*%', window, re.I):
-                heads[head.upper()].add(Decimal(value))
+            for head, value in re.findall(r'(CGST|SGST|IGST|Central\s+GST|State\s+GST|Integrated\s+GST)(?:\s*@?\s*|\d+(?:\.\d+)?\s*\(\s*|\s*\(\s*)(\d+(?:\.\d+)?)\s*%', window, re.I):
+                head = {'C': 'CGST', 'S': 'SGST', 'I': 'IGST'}[head[0].upper()]
+                heads[head].add(Decimal(value))
             percentages.update(Decimal(x) for x in re.findall(r'(\d+(?:\.\d+)?)\s*%', text[begin:end]))
         if core.is_cma_cgm_invoice(parsed.get('vendor_name'), text):
             # CMA tax-summary labels abbreviate the charge names. Bind the printed
@@ -543,7 +545,9 @@ def corroborate_source(parsed, text, core):
         for head, printed in printed_taxes.items():
             if printed and (line.get(head) is None or printed != {amount(line[head])}):
                 raise Hold('Printed charge '+head.upper()+' amounts must be extracted and agree with their own source rows.')
-        if sac and (not re.fullmatch(r'\d{4,8}', sac) or not any(re.search(r'(?<!\d)'+re.escape(sac)+r'(?!\d)', row) for row in charge_windows)):
+        document_codes = set(re.findall(r'\b(?:SAC|HSN)(?:/HSN|/SAC)?(?:\s+code)?\s*[:.]?\s*(\d{4,8})\b', text, re.I))
+        invoice_level = not printed_codes and document_codes == {sac}  # One code printed once for the whole invoice.
+        if sac and (not re.fullmatch(r'\d{4,8}', sac) or not (invoice_level or any(re.search(r'(?<!\d)'+re.escape(sac)+r'(?!\d)', row) for row in charge_windows))):
             raise Hold('A charge SAC/HSN is not evidenced on its printed charge or tax rows.')
         rate = Decimal(str(line['tax_percentage']))
         if heads['CGST'] or heads['SGST']:
@@ -558,7 +562,7 @@ def corroborate_source(parsed, text, core):
     for row in text.splitlines():
         for match in re.finditer(r'\binvoice\s+currency\s*[:(]?\s*([A-Z]{3})\b|^\s*(?:payable\s+)?currency\s*[:(]?\s*([A-Z]{3})\b', row, re.I):
             currencies.add((match[1] or match[2]).upper())
-        match = re.search(r'\b(?:grand\s+total|total\s+payable\s+amount|invoice\s+total|total\s+amount|amount\s+due)\b(.*)', row, re.I)
+        match = re.search(r'\b(?:grand\s+total|total\s+payable\s+amount|invoice\s+total|total\s+amount|amount\s+due|total\s+in)\b(.*)', row, re.I)
         if match:
             currencies.update(re.findall(r'\b[A-Z]{3}\b', match[1]))
         rupee_total = re.search(r'(?<!sub\s)(?<!sub)\btotal\s+₹\s*\d(.*)', row, re.I)

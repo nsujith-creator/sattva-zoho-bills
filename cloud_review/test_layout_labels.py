@@ -129,3 +129,45 @@ class LimitReminders(unittest.TestCase):
         result = self.warnings('1.90', 9)
         self.assertEqual(2, len(result))
         self.assertIn('AI budget nearly used', result[0]); self.assertIn('Service window ends', result[1])
+
+
+def summary_text(igst='18.00', total='118.00', hsn='998319'):
+    return '\n'.join([
+        '                                              SYNTHETIC CLOUD SUITE PRIVATE LIMITED', 'Invoice',
+        'Invoice number: SYNSUITE-001', '                                              GSTIN: 06ZZZZZ0000Z1Z5',
+        'Bill to', 'SATTVA GLOBAL LOGISTICS', 'GSTIN: '+a.OWNER_GSTIN,
+        'Details                                       HSN: '+hsn,
+        'Invoice  date                             31 Oct 2026', '', 'Page 1 of 2',
+        'Subscription                    Description    Interval        Quantity    Amount(₹)',
+        'Synthetic Suite Standard        Usage          1 Oct - 31 Oct         1       100.00',
+        '                          Subtotal in INR                          ₹100.00',
+        '                          Integrated GST (18%)                      ₹'+igst,
+        '                          Total in INR                             ₹'+total, ''])
+
+
+def summary_invoice():
+    reading = invoice()
+    reading.update(vendor_name='SYNTHETIC CLOUD SUITE PRIVATE LIMITED', vendor_gstin='06ZZZZZ0000Z1Z5',
+                   bill_number='SYNSUITE-001', bill_date='2026-10-31', tax_amount_cgst='0', tax_amount_sgst='0',
+                   tax_amount_igst='18.00')
+    reading['line_items'][0].update(description='Synthetic Suite Standard', hsn_or_sac='998319')
+    return reading
+
+
+class SubscriptionSummaryLayout(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.core = core_fixture()
+
+    def test_total_in_inr_integrated_gst_and_invoice_level_hsn_are_corroborated(self):
+        self.assertTrue(a.corroborate_source(summary_invoice(), summary_text(), self.core))
+
+    def test_wrong_printed_tax_total_or_code_still_holds(self):
+        for text in (summary_text(igst='18.50'), summary_text(total='119.00'), summary_text(hsn='998314')):
+            with self.subTest(text=text[-80:]), self.assertRaises(a.Hold):
+                a.corroborate_source(summary_invoice(), text, self.core)
+
+    def test_two_different_invoice_level_codes_do_not_cover_a_line(self):
+        text = summary_text().replace('Invoice  date', 'SAC: 996713\nInvoice  date')
+        with self.assertRaises(a.Hold):
+            a.corroborate_source(summary_invoice(), text, self.core)

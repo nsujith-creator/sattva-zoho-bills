@@ -171,3 +171,54 @@ class SubscriptionSummaryLayout(unittest.TestCase):
         text = summary_text().replace('Invoice  date', 'SAC: 996713\nInvoice  date')
         with self.assertRaises(a.Hold):
             a.corroborate_source(summary_invoice(), text, self.core)
+
+
+class ReadingFlagsShown(unittest.TestCase):
+    def test_status_page_shows_what_a_reading_flagged(self):
+        flagged = dict(invoice(), confidence='medium', issues=['Note says <GST> applies but none charged'])
+        page = a.render_status(DOC, 's.pdf', {'status': 'needs_review', 'message': 'held', 'parsed': invoice(), 'source_check': flagged})
+        self.assertIn('Second reading flagged', page); self.assertIn('&lt;GST&gt; applies', page)
+        self.assertNotIn('First reading flagged', page)
+
+
+def untaxed_overseas_text(extra=''):
+    return '\n'.join([
+        '                                                   INVOICE', '                                                   Invoice # SYNMAIL-0001',
+        '                                                   Invoice Date Nov 09, 2026', 'Synthetic Mail SAS',
+        '1 rue Exemple', 'France', 'GSTIN : 9923FRA12345OS5',
+        'BILLED TO                                          SUBSCRIPTION', 'Sattva Global Logistics',
+        'India', 'GSTIN : '+a.OWNER_GSTIN,
+        'DESCRIPTION                                   UNITS        UNIT PRICE   AMOUNT (INR)',
+        'Starter plan monthly                              1           ₹25.00         ₹25.00',
+        'Starter recurring emails                      40000                -         ₹75.00',
+        '                                                             Total       ₹100.00',
+        '                                                Amount Due (INR) ₹100.00', extra, ''])
+
+
+def untaxed_overseas_invoice():
+    reading = invoice()
+    line = lambda d, r: {'description': d, 'quantity': 1, 'rate': r, 'hsn_or_sac': '', 'tax_percentage': '0',
+                         'cgst': None, 'sgst': None, 'igst': None}
+    reading.update(vendor_name='Synthetic Mail SAS', vendor_gstin='9923FRA12345OS5', bill_number='SYNMAIL-0001',
+                   bill_date='2026-11-09', is_overseas=True, subtotal='100.00', tax_amount_cgst='0',
+                   tax_amount_sgst='0', tax_amount_igst='0', invoice_total='100.00',
+                   line_items=[line('Starter plan monthly', '25.00'), line('Starter recurring emails', '75.00')])
+    return reading
+
+
+class UntaxedOverseasInrLayout(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.core = core_fixture()
+
+    def test_inr_overseas_invoice_without_subtotal_or_rates_is_corroborated(self):
+        self.assertTrue(a.corroborate_source(untaxed_overseas_invoice(), untaxed_overseas_text(), self.core))
+
+    def test_a_printed_gst_rate_contradicting_zero_still_holds(self):
+        with self.assertRaises(a.Hold):
+            a.corroborate_source(untaxed_overseas_invoice(), untaxed_overseas_text('IGST @ 18%   ₹0.00'), self.core)
+
+    def test_missing_subtotal_never_excuses_a_taxed_invoice(self):
+        reading = untaxed_overseas_invoice(); reading.update(subtotal='100.00', tax_amount_igst='18.00', invoice_total='118.00')
+        with self.assertRaises(a.Hold):
+            a.corroborate_source(reading, untaxed_overseas_text(), self.core)

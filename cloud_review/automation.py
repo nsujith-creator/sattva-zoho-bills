@@ -22,7 +22,7 @@ from pathlib import Path
 
 MODEL = 'claude-haiku-4-5'
 OWNER_GSTIN = '27AEFPN9399L1ZI'
-OIDAR = r'99\d{2}[A-Z]{3}\d{5}OS[A-Z]'  # India OIDAR registration of an overseas supplier.
+OIDAR = r'99\d{2}[A-Z]{3}\d{5}OS[A-Z0-9]'  # India OIDAR registration of an overseas supplier.
 POLICY = 'owner-cloud-automatic-posting-2026-10-28'
 MAX_OUTPUT = 6000
 MAX_INPUT = 40000
@@ -128,7 +128,7 @@ def printed_date_forms(value):
 def printed_buyer_registrations(text, party='buyer'):
     # pdftotext -layout keeps the column positions of multi-party address blocks.
     # A role starts a bounded block; another role in that column ends it.
-    roles = re.compile(r'\b(Buyer|Bill(?:ed)?\s+To|Invoice\s+To|Recipient|Customer|Shipper|Consignee|Supplier|Seller|Payable\s+to|Service\s+Provider)(?=\s*:|\s+GSTIN\b|\s*$)', re.I)
+    roles = re.compile(r'\b(Buyer|Bill(?:ed)?\s+To|Invoice\s+To|Recipient|Customer|Shipper|Consignee|Supplier|Seller|Payable\s+to|Service\s+Provider)(?=\s*:|\s+GSTIN\b|\s*$|\s{3,}\S)', re.I)
     selected_roles = ({'BUYER', 'BILL TO', 'BILLED TO', 'INVOICE TO', 'RECIPIENT', 'CUSTOMER'} if party == 'buyer'
                       else {'SUPPLIER', 'SELLER', 'PAYABLE TO', 'SERVICE PROVIDER'} if party == 'supplier'
                       else {'SHIPPER', 'CONSIGNEE'})
@@ -382,7 +382,7 @@ def corroborate_source(parsed, text, core):
         for index, row in enumerate(rows):
             for match in re.finditer(r'\b'+OIDAR+r'\b', row.upper()):
                 above = next((r for r in reversed(rows[max(0, index-2):index]) if r.strip()), '')
-                if re.search(r'\bGST\b', row[:match.start()], re.I) or re.search(r'\bGST(?:IN)?\b\s*:?\s*$', above, re.I):
+                if re.search(r'\bGST(?:IN)?\b', row[:match.start()], re.I) or re.search(r'\bGST(?:IN)?\b\s*:?\s*$', above, re.I):
                     oidar.add(match[0])
         if set(re.findall(r'\b'+OIDAR+r'\b', text.upper())) != oidar or oidar != {parsed['vendor_gstin'].upper()}:
             raise Hold('Supplier overseas GST registration is not uniquely evidenced under its printed GST label.')
@@ -473,6 +473,9 @@ def corroborate_source(parsed, text, core):
                 values.extend(Decimal(x.replace(',', '')) for x in re.findall(r'\d[\d,]*\.\d{2}', line[match.end():]))
         if not values and key.startswith('tax_amount_') and not amount(parsed[key]):
             continue
+        if (not values and key == 'subtotal' and amount(parsed['subtotal']) == amount(parsed['invoice_total'])
+                and not any(amount(parsed[k]) for k in ('tax_amount_cgst', 'tax_amount_sgst', 'tax_amount_igst'))):
+            continue  # No tax and no subtotal row: the labelled total is the taxable total.
         if not values or set(values) != {amount(parsed[key])}:
             raise Hold('The labelled '+key.replace('_', ' ')+' is missing, ambiguous or different in the PDF.')
     charge_starts = sorted({text.rfind('\n', 0, match.start())+1 for item in parsed.get('line_items', [])
@@ -554,6 +557,10 @@ def corroborate_source(parsed, text, core):
             tax_ok = heads['CGST'] == heads['SGST'] == {rate/2} and not heads['IGST']
         elif heads['IGST']:
             tax_ok = heads['IGST'] == {rate}
+        elif not percentages and rate == 0:
+            # Untaxed line on an invoice that prints no GST anywhere.
+            tax_ok = not any(amount(parsed[k]) for k in ('tax_amount_cgst', 'tax_amount_sgst', 'tax_amount_igst')) \
+                and not re.search(r'\b(?:CGST|SGST|IGST)\b\s*@?\s*\(?\s*\d+(?:\.\d+)?\s*%', text, re.I)
         else:
             tax_ok = percentages == {rate}
         if not tax_ok:
@@ -1598,5 +1605,14 @@ def render_status(doc_id, filename, job, csrf=''):
     fields = job.get('parsed') or {}
     rows = ''.join('<tr><th>'+esc(k.replace('_', ' '))+'</th><td>'+esc(fields[k])+'</td></tr>'
                    for k in ('vendor_name','vendor_gstin','bill_number','bill_date','currency_code',*MONEY) if k in fields)
+    # Show what each AI reading itself flagged, so a reading hold explains itself.
+    for label, key in (('First reading', 'parsed'), ('Second reading', 'source_check')):
+        reading = job.get(key)
+        if isinstance(reading, dict) and (reading.get('confidence') != 'high' or reading.get('issues') not in ([], '', None)
+                                          or reading.get('multi_invoice_count') != 1):
+            issues = reading.get('issues')
+            issues = '; '.join(map(str, issues)) if isinstance(issues, list) else str(issues or 'none listed')
+            rows += ('<tr><th>'+esc(label)+' flagged</th><td>confidence '+esc(reading.get('confidence'))
+                     +'; invoices in PDF '+esc(reading.get('multi_invoice_count'))+'; '+esc(issues[:600])+'</td></tr>')
     refresh = '' if job['status'] in TERMINAL else '<script>setTimeout(()=>location.reload(),2500)</script>'
     return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Invoice · Sattva Bills</title><style>body{font:16px system-ui;color:#112033;max-width:800px;margin:40px auto;padding:0 18px}h1{overflow-wrap:anywhere}td,th{text-align:left;padding:10px;border-bottom:1px solid #ddd;overflow-wrap:anywhere}table{width:100%;table-layout:fixed}a{color:#245ddc}p{line-height:1.6}</style></head><body><header><a href="/">Bills inbox</a></header><h1>'+esc(filename)+'</h1><p role="status"><strong>'+esc(job['status'].replace('_',' ').title())+'</strong> — '+esc(job['message'])+'</p>'+link+'<p><a href="/invoice/'+esc(doc_id)+'" target="_blank" rel="noopener">Open original PDF ↗</a></p><table>'+rows+'</table>'+refresh+'</body></html>'

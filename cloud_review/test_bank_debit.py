@@ -184,3 +184,25 @@ class BankDebitJourney(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ReverseChargeNotes(unittest.TestCase):
+    NOTE = ('Overseas supplier with Indian GSTIN for reverse charge mechanism; no GST charged despite note referencing '
+            'GST applicability to non-registered customers—this is normal for reverse charge on digital services')
+
+    def reading(self, **values):
+        base = overseas_invoice(); base['currency_code'] = 'INR'; base.update(values)
+        return base
+
+    def test_high_confidence_reverse_charge_note_on_untaxed_oidar_invoice_is_accepted(self):
+        self.assertTrue(a.reverse_charge_note_only(self.reading(issues=[self.NOTE])))
+
+    def test_doubt_tax_low_confidence_or_domestic_supplier_still_hold(self):
+        for values in ({'issues': [self.NOTE+'; amount inferred from total']},
+                       {'issues': ['Unit price shown as dash']},
+                       {'issues': [self.NOTE], 'confidence': 'medium'},
+                       {'issues': [self.NOTE], 'tax_amount_igst': '18.00'},
+                       {'issues': [self.NOTE], 'vendor_gstin': '27ABCDE1234F1Z5'},
+                       {'issues': self.NOTE}):
+            with self.subTest(values=values):
+                self.assertFalse(a.reverse_charge_note_only(self.reading(**values)))

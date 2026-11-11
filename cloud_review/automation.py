@@ -66,7 +66,7 @@ Preserve currency of the invoice payable, including INR invoices with USD refere
 Use decimal strings without commas or symbols. Zero only if the field is clearly absent.
 If multiple invoices/credit notes occur, set multi_invoice_count to their count and confidence low.
 Identify credit notes, unclear digits, discounts, adjustments and conflicting figures in issues.
-Normal, NOT issues: an overseas supplier invoice that charges no Indian GST (the buyer self-assesses it under reverse charge),
+List in issues ONLY problems that should stop posting; never list normal observations there. Normal, NOT issues: an overseas supplier invoice that charges no Indian GST (the buyer self-assesses it under reverse charge),
 even if a note says GST applies to unregistered customers; and a unit price shown as a dash or blank when the line amount is printed.
 No account choices, tax eligibility decisions, or permission to post are requested from you.'''
 
@@ -861,13 +861,32 @@ def cma_printed_charge_taxes(line, text):
     return found
 
 
+def reverse_charge_note_only(reading):
+    """True when a reading's issues only describe reverse charge on an untaxed overseas invoice.
+    Any doubt word, any printed tax, a non-OIDAR supplier or less than high confidence keeps the hold."""
+    issues = reading.get('issues')
+    if issues in ([], '', None):
+        return True
+    if reading.get('confidence') != 'high' or not isinstance(issues, list) or not issues:
+        return False
+    if not re.fullmatch(OIDAR, str(reading.get('vendor_gstin') or '').upper()):
+        return False
+    try:
+        if any(amount(reading.get(k)) for k in ('tax_amount_cgst', 'tax_amount_sgst', 'tax_amount_igst')):
+            return False
+    except Hold:
+        return False
+    doubt = r'unclear|illegible|unreadable|conflict|mismatch|differ|missing|discount|credit|multiple|ambiguous|infer|guess|cannot|could not|unsure|uncertain|assum|estimat|error|wrong|incorrect|verify|check'
+    return all(isinstance(i, str) and re.search(r'reverse[ -]charge', i, re.I) and not re.search(doubt, i, re.I) for i in issues)
+
+
 def reconcile_readings(first, second, text, core):
     # Raw provider results remain immutable. Only printed CMA tax rows may replace
     # charge-tax fields in these separate derived copies.
     derived, corrections, sources = [], [], []
     for label, raw in (('first', first), ('second', second)):
         if (not isinstance(raw, dict) or raw.get('confidence') != 'high'
-                or raw.get('issues') not in ([], '', None) or raw.get('multi_invoice_count') != 1):
+                or not reverse_charge_note_only(raw) or raw.get('multi_invoice_count') != 1):
             raise Hold('The two source readings disagree or are incomplete; no bill posted.')
         if (not isinstance(raw.get('line_items'), list) or not 0 < len(raw['line_items']) <= 100
                 or any(not isinstance(line, dict) for line in raw['line_items'])):
@@ -900,7 +919,9 @@ def reconcile_readings(first, second, text, core):
             a['vendor_name'] = b['vendor_name'] = base(a['vendor_name'])
     if source_signature(a) != source_signature(b):
         raise Hold('The two source readings disagree after printed-field verification; no bill posted.')
+    accepted = [n for r in (first, second) for n in (r.get('issues') or [])]
     evidence = dict(sources[0], raw_reading_sha256=[reading_digest(first), reading_digest(second)],
+                    accepted_reverse_charge_notes=accepted,
                     reconciled_sha256=reading_digest(a), corrections=corrections,
                     checked_readings=2, reconciliation='printed-cma-tax-rows-v1')
     return a, evidence
@@ -978,7 +999,7 @@ def bank_booking(parsed, bank):
 
 
 def validate(parsed, core, vendors, check_zoho_rounding=True, bank=None):
-    if parsed.get('confidence') != 'high' or parsed.get('issues') not in ([], '', None):
+    if parsed.get('confidence') != 'high' or not reverse_charge_note_only(parsed):
         raise Hold('Source is unclear: '+str(parsed.get('issues') or 'low confidence')[:300])
     if parsed.get('multi_invoice_count') != 1:
         raise Hold('This PDF contains multiple invoices or credit notes.')

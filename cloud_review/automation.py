@@ -66,6 +66,8 @@ Preserve currency of the invoice payable, including INR invoices with USD refere
 Use decimal strings without commas or symbols. Zero only if the field is clearly absent.
 If multiple invoices/credit notes occur, set multi_invoice_count to their count and confidence low.
 Identify credit notes, unclear digits, discounts, adjustments and conflicting figures in issues.
+Normal, NOT issues: an overseas supplier invoice that charges no Indian GST (the buyer self-assesses it under reverse charge),
+even if a note says GST applies to unregistered customers; and a unit price shown as a dash or blank when the line amount is printed.
 No account choices, tax eligibility decisions, or permission to post are requested from you.'''
 
 
@@ -1346,6 +1348,20 @@ class Engine:
             self.save(job, 'queued', retry_count=job.get('retry_count', 0)+1,
                       retry_attempts=0, retry_at=0, message='Retry requested. Retained source readings will be reused.')
 
+    def reread(self, doc_id):
+        # Owner-requested fresh readings for a hold that stopped before any Zoho create.
+        # Earlier readings are kept on the job as evidence; the AI budget still limits the calls.
+        with self.state_lock:
+            job = self.read(doc_id)
+            if not job or not source_recheck_allowed(job):
+                raise Hold('Fresh readings are only available for a hold before anything reached Zoho.')
+            previous = job.get('previous_readings', [])+[{'parsed': job['parsed'], 'source_check': job['source_check'],
+                                                         'message': job.get('message'), 'at': datetime.now(timezone.utc).isoformat()}]
+            for key in ('parsed', 'source_check', 'reconciled_parsed', 'source_evidence', 'verification', 'payload'):
+                job.pop(key, None)
+            self.save(job, 'queued', previous_readings=previous[-5:], retry_attempts=0, retry_at=0,
+                      message='Fresh readings requested. Haiku will read the original PDF twice within the approved AI budget.')
+
     def set_bank_debit(self, doc_id, transaction, charges):
         # Owner-entered bank debits for a foreign-currency overseas invoice. Readings are
         # reused; nothing is created until the converted bill passes every check.
@@ -1594,6 +1610,8 @@ def render_status(doc_id, filename, job, csrf=''):
         link = '<p><a href="'+root+'#/bills/'+esc(job['bill_id'])+'" target="_blank" rel="noopener">Open Zoho bill ↗</a></p>'
     if (job['status'] == 'retryable' or source_recheck_allowed(job)) and csrf:
         link += '<form method="post" action="/api/retry/'+esc(doc_id)+'"><input type="hidden" name="csrf" value="'+esc(csrf)+'"><button type="submit">Retry processing</button><p>Completed readings are reused. A missing reading uses the remaining approved AI budget. An uncertain create is only looked up.</p></form>'
+    if source_recheck_allowed(job) and csrf:
+        link += '<form method="post" action="/api/reread/'+esc(doc_id)+'"><input type="hidden" name="csrf" value="'+esc(csrf)+'"><button type="submit">Re-read with fresh AI readings</button><p>Reads the original twice again (about USD 0.05 of the AI budget), then runs every check. Nothing has reached Zoho for this invoice.</p></form>'
     if job['status'] == 'needs_bank_amounts' and csrf:
         entered = job.get('bank_debit') or {}
         field = lambda name, label, value: ('<p><label>'+label+'<br><input name="'+name+'" inputmode="decimal" required pattern="[0-9,]+(\\.[0-9]{1,2})?" value="'

@@ -229,7 +229,7 @@ class Handler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             if self.command == 'GET' and not path.startswith('/api/'):
                 self.reply(303, headers={'Location':'/login?next='+quote(self.safe_next(self.path),safe='')})
-            elif self.command == 'POST' and (path == '/logout' or path.startswith(('/api/retry/', '/api/bank-debit/'))):
+            elif self.command == 'POST' and (path == '/logout' or path.startswith(('/api/retry/', '/api/bank-debit/', '/api/reread/'))):
                 # Browser form buttons: return to sign-in, then to the same invoice page.
                 back = '/review/'+path.rsplit('/', 1)[1] if path.startswith('/api/') else '/'
                 self.reply(303, headers={'Location':'/login?next='+quote(self.safe_next(back),safe='')})
@@ -483,6 +483,21 @@ main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%
                 self.err(403, 'Form token missing. Refresh and try again.'); return
             try:
                 self.server.automation.set_bank_debit(doc_id, form.get('transaction'), form.get('charges'))
+            except Hold as exc:
+                self.err(409, str(exc)); return
+            self.reply(303, headers={'Location':'/review/'+doc_id})
+            return
+        if path.startswith('/api/reread/'):
+            doc_id = path.removeprefix('/api/reread/')
+            if not self.server.automation or not re.fullmatch(r'[a-f0-9]{32}', doc_id):
+                self.err(404, 'Invoice not found'); return
+            form = self.auth_form()
+            if form is None:
+                return
+            if not secrets.compare_digest(form.get('csrf', ''), self.session['csrf']):
+                self.err(403, 'Form token missing. Refresh and try again.'); return
+            try:
+                self.server.automation.reread(doc_id)
             except Hold as exc:
                 self.err(409, str(exc)); return
             self.reply(303, headers={'Location':'/review/'+doc_id})

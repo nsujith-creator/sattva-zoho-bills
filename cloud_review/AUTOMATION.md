@@ -53,3 +53,7 @@ Owner-approved limits, 30 October 2026: lifetime AI allowance USD 2.00 (`APP_AI_
 ## Foreign-currency overseas invoices (owner rule, 3 Nov 2026)
 
 An overseas invoice printed only in USD/EUR/GBP stops at **Needs Bank Amounts**. The invoice page shows two fields: the bank debit for the payment and the bank charges (INR). After the owner submits them, the retained readings are reused (no new AI call) and the bill is built in INR: service lines sum exactly to the payment debit with reverse charge, plus a `Bank charges on foreign-currency payment` line with no tax. Implausible amounts (effective rate outside the band, charges above 10%) return to the form. Read-back verifies the service lines through the reverse-charge verifier and the bank line exactly (amount, description, account, no tax). A Zoho vendor with the invoice name, or the name without a trailing legal suffix such as `, PBC` / `, Inc`, must already exist.
+
+## Fresh readings (owner request, 11 Nov 2026)
+
+A hold that stopped before anything reached Zoho (no create attempt, no bill ID, no journaled payload) shows **Re-read with fresh AI readings**. It discards the two current readings from processing (they stay on the job under `previous_readings`, last five kept), takes two new Haiku readings within the approved AI budget, and runs every check again. The reading prompt also states that an overseas invoice charging no Indian GST (reverse charge on the buyer) and a dash unit price beside a printed line amount are normal, so they are not flagged as issues.

@@ -99,6 +99,36 @@ class SourceRecheck(unittest.TestCase):
                 with self.assertRaises(a.Hold):
                     self.engine.retry(DOC)
 
+    def test_reread_takes_two_fresh_readings_and_keeps_the_old_ones(self):
+        flagged = dict(invoice(), confidence='medium', issues=['dash unit price'])
+        job = self.engine.read(DOC)
+        self.engine.save(job, 'needs_review', parsed=flagged, source_check=flagged, message='The two source readings disagree')
+        self.engine.reread(DOC)
+        job = self.engine.read(DOC)
+        self.assertEqual('queued', job['status']); self.assertNotIn('parsed', job)
+        self.assertEqual(flagged, job['previous_readings'][0]['parsed'])
+        calls = self.engine.ai.calls
+        self.engine.process(DOC)
+        self.assertEqual(calls+2, self.engine.ai.calls)
+        self.assertEqual(invoice(), self.engine.read(DOC)['parsed'])
+
+    def test_reread_is_refused_after_any_create_attempt_or_while_running(self):
+        with self.assertRaises(a.Hold):
+            self.engine.reread(DOC)   # queued, not a hold
+        for values in ({'create_attempted': True}, {'bill_id': '456'}, {'payload_sha256': 'x'}):
+            with self.subTest(values=values):
+                self.hold(**values)
+                with self.assertRaises(a.Hold):
+                    self.engine.reread(DOC)
+
+    def test_reread_button_only_on_pre_create_holds(self):
+        held = {'status': 'needs_review', 'message': 'held', 'parsed': invoice(), 'source_check': invoice()}
+        self.assertIn('/api/reread/'+DOC, a.render_status(DOC, 's.pdf', held, csrf='tok'))
+        self.assertNotIn('/api/reread/', a.render_status(DOC, 's.pdf', dict(held, bill_id='456'), csrf='tok'))
+
+    def test_prompt_treats_reverse_charge_and_dash_unit_price_as_normal(self):
+        self.assertIn('reverse charge', a.PROMPT); self.assertIn('dash', a.PROMPT)
+
 
 if __name__ == '__main__':
     unittest.main()

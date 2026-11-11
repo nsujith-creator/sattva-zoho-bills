@@ -138,6 +138,8 @@ class OwnerHTTP(unittest.TestCase):
         self.assertEqual(303,code);self.assertEqual('/login?next=%2Freview%2F'+'a'*32,h['Location'])
         code,h,_=self.request('POST','/api/bank-debit/'+'a'*32,'csrf=stale&transaction=1&charges=0',form)
         self.assertEqual(303,code);self.assertEqual('/login?next=%2Freview%2F'+'a'*32,h['Location'])
+        code,h,_=self.request('POST','/api/reread/'+'a'*32,'csrf=stale',form)
+        self.assertEqual(303,code);self.assertEqual('/login?next=%2Freview%2F'+'a'*32,h['Location'])
         code,h,_=self.request('POST','/logout','csrf=stale',form)
         self.assertEqual(303,code);self.assertEqual('/login?next=%2F',h['Location'])
         self.assertEqual(401,self.request('POST','/api/invoices',b'%PDF-synthetic',{'Cookie':cookie})[0])

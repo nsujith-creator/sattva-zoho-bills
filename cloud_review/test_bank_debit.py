@@ -147,6 +147,7 @@ class BankDebitJourney(unittest.TestCase):
         self.assertEqual((950.45, '914109000000014234'), (service['rate'], service['reverse_charge_tax_id']))
         self.assertEqual((39.24, a.BANK_CHARGE_LINE), (bank['rate'], bank['description']))
         self.assertNotIn('reverse_charge_tax_id', bank); self.assertNotIn('tax_id', bank)
+        self.assertEqual((a.EXPENSE_ACCOUNT, a.BANK_FEES_ACCOUNT), (service['account_id'], bank['account_id']))
         self.assertEqual('INR', job['payload']['currency_code'])
         self.assertTrue(job['payload']['notes'].startswith('Original USD 10.00 paid by bank debit INR 950.45 (effective 95.0450 INR/USD)'))
         self.assertEqual('USD', job['parsed']['currency_code'])
@@ -206,3 +207,18 @@ class ReverseChargeNotes(unittest.TestCase):
                        {'issues': self.NOTE}):
             with self.subTest(values=values):
                 self.assertFalse(a.reverse_charge_note_only(self.reading(**values)))
+
+
+class AccountRouting(unittest.TestCase):
+    def test_owner_routing_by_matched_vendor_and_google_service_code(self):
+        cases = {('ANTHROPIC', '998315'): a.SOFTWARE_ACCOUNT, ('OpenAI, LLC', ''): a.SOFTWARE_ACCOUNT,
+                 ('Railway Corporation', ''): a.SOFTWARE_ACCOUNT, ('Cloudflare, Inc.', ''): a.SOFTWARE_ACCOUNT,
+                 ('ShipsGo', ''): a.SOFTWARE_ACCOUNT, ('Sendinblue SAS', ''): a.ADVERTISING_ACCOUNT,
+                 ('GOOGLE INDIA PRIVATE LIMITED', '998319'): a.SOFTWARE_ACCOUNT,
+                 ('GOOGLE INDIA PRIVATE LIMITED', '998365'): a.ADVERTISING_ACCOUNT,
+                 ('GOOGLE INDIA PRIVATE LIMITED', '996713'): a.EXPENSE_ACCOUNT,
+                 ('SYNTHETIC FREIGHT VENDOR', '996713'): a.EXPENSE_ACCOUNT,
+                 ('TOTAL TRANSPORT SYSTEMS LIMITED', ''): a.EXPENSE_ACCOUNT}
+        for (vendor, sac), account in cases.items():
+            with self.subTest(vendor=vendor, sac=sac):
+                self.assertEqual(account, a.line_account(vendor, sac))

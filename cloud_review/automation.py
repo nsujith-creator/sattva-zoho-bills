@@ -40,7 +40,30 @@ TERMINAL = {'verified', 'duplicate', 'needs_review', 'failed', 'validated', 'ret
 BANK_RATE_BOUNDS = {'USD': (Decimal(70), Decimal(130)), 'EUR': (Decimal(75), Decimal(150)),
                     'GBP': (Decimal(90), Decimal(170))}
 BANK_CHARGE_LINE = 'Bank charges on foreign-currency payment'
-EXPENSE_ACCOUNT = '914109000000000567'  # The account every cloud bill line already uses.
+EXPENSE_ACCOUNT = '914109000000000567'  # COGS: the default for every other cloud bill line.
+# Owner routing, 12 Nov 2026: by the matched Zoho vendor, never by AI choice.
+SOFTWARE_ACCOUNT = '914109000000994119'     # Software Subscription Charger
+ADVERTISING_ACCOUNT = '914109000000000501'  # Advertising And Marketing
+BANK_FEES_ACCOUNT = '914109000000000507'    # Bank Fees and Charges
+SOFTWARE_VENDORS = {'ANTHROPIC', 'OPENAI', 'RAILWAY', 'CLOUDFLARE', 'SHIPSGO'}  # first word of the Zoho vendor name
+ADVERTISING_VENDORS = {'SENDINBLUE', 'BREVO'}
+
+
+def line_account(vendor, sac):
+    words = re.sub(r'[^A-Z0-9 ]', ' ', str(vendor or '').upper()).split()
+    first = words[0] if words else ''
+    if first in SOFTWARE_VENDORS:
+        return SOFTWARE_ACCOUNT
+    if first in ADVERTISING_VENDORS:
+        return ADVERTISING_ACCOUNT
+    if words[:2] == ['GOOGLE', 'INDIA']:
+        # Google India bills both Workspace and Ads: route by the printed service code.
+        code = str(sac or '')
+        if code in ('998319', '998315'):
+            return SOFTWARE_ACCOUNT
+        if code.startswith('99836'):
+            return ADVERTISING_ACCOUNT
+    return EXPENSE_ACCOUNT
 SCHEMA = '''{"vendor_name":"printed supplier name","vendor_gstin":"printed supplier GSTIN or empty",
 "buyer_gstin":"printed buyer GSTIN or empty","bill_number":"printed invoice number",
 "bill_date":"YYYY-MM-DD","due_date":null,"currency_code":"INR","is_overseas":false,
@@ -1090,11 +1113,13 @@ def validate(parsed, core, vendors, check_zoho_rounding=True, bank=None):
         payload = core.build_payload(booking, vid, route)
     except (ValueError, TypeError) as exc:
         raise Hold('Invoice line or tax mapping needs review: '+str(exc)[:180]) from exc
+    for line in payload['line_items']:
+        line['account_id'] = line_account(name, line.get('hsn_or_sac'))
     if booking is not parsed:
         charges = amount(bank['charges_inr'])
         if charges:
             payload['line_items'].append({'description': BANK_CHARGE_LINE, 'quantity': 1,
-                                          'rate': float(charges), 'account_id': EXPENSE_ACCOUNT})
+                                          'rate': float(charges), 'account_id': BANK_FEES_ACCOUNT})
         payload['notes'] = booking['bank_note']+(' '+payload['notes'] if payload['notes'] else '')
     check = core.reconcile_payload_taxes(parsed, payload, route)
     if route['is_overseas']:
@@ -1179,7 +1204,7 @@ def verify_detail(core, bid, payload, parsed, detail, owned=True, bank=None):
                 raise ProviderError('Zoho line '+field+' is incomplete; retained bill will be read again.', retryable=True) from exc
             if value != Decimal(str(sent[field])):
                 check['errors'].append('line_'+field+'_mismatch')
-        for field in ('description', 'account_id', 'hsn_or_sac'):
+        for field in ('description', 'account_id', 'hsn_or_sac') if owned else ('description', 'hsn_or_sac'):
             if field in sent and str(saved.get(field) or '') != str(sent[field]):
                 check['errors'].append('line_'+field+'_mismatch')
         if saved.get('tax_percentage') is not None:
@@ -1273,7 +1298,7 @@ def verify_bank_detail(core, bid, payload, parsed, detail, owned, bank):
                 exact = Decimal(str(line.get('rate')))*Decimal(str(line.get('quantity'))) == charges
             except (InvalidOperation, ValueError, TypeError):
                 exact = False
-            if not exact or str(line.get('description') or '') != BANK_CHARGE_LINE or str(line.get('account_id') or '') != EXPENSE_ACCOUNT:
+            if not exact or str(line.get('description') or '') != BANK_CHARGE_LINE or str(line.get('account_id') or '') != BANK_FEES_ACCOUNT:
                 errors.append('bank_charge_line_mismatch')
             if line.get('tax_id') or line.get('reverse_charge_tax_id') or any(amount(line.get(k) or 0) for k in ('tax_amount', 'reverse_charge_tax_amount')):
                 errors.append('bank_charge_line_taxed')

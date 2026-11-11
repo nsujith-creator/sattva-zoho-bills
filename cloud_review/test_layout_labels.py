@@ -252,3 +252,25 @@ class UntaxedOverseasInrLayout(unittest.TestCase):
         reading = untaxed_overseas_invoice(); reading.update(subtotal='100.00', tax_amount_igst='18.00', invoice_total='118.00')
         with self.assertRaises(a.Hold):
             a.corroborate_source(reading, untaxed_overseas_text(), self.core)
+
+
+class UnitsAndOverseasNormalisation(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.core = core_fixture()
+
+    def readings(self, quantity=40000, overseas=False, rate='75.00'):
+        reading = untaxed_overseas_invoice()
+        reading['is_overseas'] = overseas
+        reading['line_items'][1].update(quantity=quantity, rate=rate)
+        return reading, copy.deepcopy(reading)
+
+    def test_units_in_quantity_and_missed_overseas_flag_are_normalised_after_printed_proof(self):
+        parsed, evidence = a.reconcile_readings(*self.readings(), untaxed_overseas_text(), self.core)
+        self.assertEqual([1, 1], [x['quantity'] for x in parsed['line_items']])
+        self.assertIs(True, parsed['is_overseas'])
+        self.assertEqual({'quantity', 'is_overseas'}, {c['field'] for c in evidence['corrections']})
+
+    def test_unit_price_read_as_line_amount_still_holds(self):
+        with self.assertRaises(a.Hold):
+            a.reconcile_readings(*self.readings(rate='0.01'), untaxed_overseas_text(), self.core)

@@ -905,6 +905,24 @@ def reconcile_readings(first, second, text, core):
                                             'row_sha256': proof['row_sha256']})
                     line[head] = proof['amount']
         sources.append(corroborate_source(parsed, text, core))
+        # After printed proof only: an OIDAR registration on the PDF is an overseas supplier,
+        # and units (e.g. 40000 emails) in quantity do not change a printed line total.
+        if re.fullmatch(OIDAR, str(parsed.get('vendor_gstin') or '').upper()) and parsed.get('is_overseas') is not True:
+            corrections.append({'reading': label, 'field': 'is_overseas', 'raw': parsed.get('is_overseas'), 'printed': 'OIDAR registration'})
+            parsed['is_overseas'] = True
+        try:
+            totals_match = sum(amount(x.get('rate')) for x in parsed['line_items']) == amount(parsed.get('subtotal'))
+        except Hold:
+            totals_match = False
+        for index, line in enumerate(parsed['line_items']):
+            if totals_match and str(line.get('quantity')) not in ('1', '1.0', '1.00'):
+                try:
+                    units = Decimal(str(line.get('quantity')))
+                except (InvalidOperation, ValueError):
+                    units = Decimal(0)
+                if units.is_finite() and units > 0:
+                    corrections.append({'reading': label, 'line': index, 'field': 'quantity', 'raw': line.get('quantity'), 'printed': 'line total'})
+                    line['quantity'] = 1
         derived.append(parsed)
     # CMA's printed principal and the same principal qualified C/O CCAI are
     # equivalent only after both full names and the SAME supplier GSTIN pass PDF proof.
@@ -1647,7 +1665,7 @@ def render_status(doc_id, filename, job, csrf=''):
     # Show what each AI reading itself flagged, so a reading hold explains itself.
     for label, key in (('First reading', 'parsed'), ('Second reading', 'source_check')):
         reading = job.get(key)
-        if isinstance(reading, dict) and (reading.get('confidence') != 'high' or reading.get('issues') not in ([], '', None)
+        if isinstance(reading, dict) and (reading.get('confidence') != 'high' or not reverse_charge_note_only(reading)
                                           or reading.get('multi_invoice_count') != 1):
             issues = reading.get('issues')
             issues = '; '.join(map(str, issues)) if isinstance(issues, list) else str(issues or 'none listed')

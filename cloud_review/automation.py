@@ -352,6 +352,143 @@ def corroborate_total_transport(parsed, text):
     return {'method':'pdftotext+total-transport-columns', 'text_sha256':hashlib.sha256(text.encode()).hexdigest()}
 
 
+OOCL_NAME = 'ORIENT OVERSEAS CONTAINER LINE LIMITED'
+
+
+def is_oocl_layout(text):
+    return bool(re.search(r'^\s*Orient Overseas Container Line Limited(?:\s{2,}|\s*$)', text, re.I | re.M)
+                and re.search(r'^\s*GST Detail\s*$', text, re.M))
+
+
+def corroborate_oocl(parsed, text):
+    """Read OOCL India's layout: header, charge table and GST Detail table.
+
+    OOCL prints the invoice number with a space ("445 047701B") and the buyer and
+    supplier GSTINs without labels, so the generic label checks cannot read it.
+    Every printed figure must agree with both readings and with the invoice's own
+    arithmetic. Any unexpected row, label or value holds the bill.
+    """
+    normalize = lambda value: ' '.join(re.findall(r'[A-Z0-9]+', str(value).upper()))
+    compact = lambda value: re.sub(r'[^A-Z0-9]', '', str(value).upper())
+    money = lambda value: amount(value.replace(',', ''))
+    cents = lambda value: value.quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+    gstin = r'\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z0-9]{2}'
+    m = r'\d[\d,]*\.\d{2}'
+
+    def check(ok, what):
+        if not ok:
+            raise Hold('OOCL '+what+' is missing, ambiguous or different from the readings.')
+
+    def day(value):
+        try:
+            return datetime.strptime(value, '%d %b %Y').date().isoformat()
+        except ValueError as exc:
+            raise Hold('OOCL printed date is unreadable.') from exc
+
+    check(normalize(parsed.get('vendor_name')) == OOCL_NAME, 'supplier name')
+    check(not re.search(r'\bcredit\s+note\b|\bdiscount\b', text, re.I), 'document type (credit note or discount printed)')
+    pages = [page for page in text.split('\f') if page.strip()]
+    check(pages, 'page layout')
+
+    # Header, repeated on every page: name, unlabelled supplier GSTIN, number, dates.
+    numbers, issued, due, suppliers = set(), set(), set(), set()
+    for page in pages:
+        rows = page.splitlines()
+        end = next((i for i, row in enumerate(rows) if re.search(r'(?:^|\s{2,})TAX INVOICE(?:\s{2,}|\s*$)', row)), None)
+        check(end is not None and end < 15, 'page header')
+        header = rows[:end+2]
+        check(sum(bool(re.search(r'^\s*Orient Overseas Container Line Limited(?:\s{2,}|\s*$)', r, re.I)) for r in header) == 1, 'page header name')
+        regs = re.findall(r'\b'+gstin+r'\b', '\n'.join(header))
+        found = [re.findall(r'\bINVOICE NO\.\s*:\s*(\S.*?)\s*$', r) for r in header]
+        dates = [re.findall(r'\bISSUE DATE\s*:\s*(\d{2} [A-Z][a-z]{2} \d{4})\s*$', r) for r in header]
+        dues = [re.findall(r'\bDUE DATE\s*:\s*(\d{2} [A-Z][a-z]{2} \d{4})\s*$', r) for r in header]
+        for values, what in ((regs, 'supplier GSTIN'), (sum(found, []), 'invoice number'),
+                             (sum(dates, []), 'issue date'), (sum(dues, []), 'due date')):
+            check(len(values) == 1, what)
+        suppliers.update(regs); numbers.add(compact(sum(found, [])[0]))
+        issued.add(day(sum(dates, [])[0])); due.add(day(sum(dues, [])[0]))
+    check(suppliers == {str(parsed.get('vendor_gstin') or '').upper()}, 'supplier GSTIN')
+    check(numbers == {compact(parsed.get('bill_number'))}, 'invoice number')
+    check(issued == {parsed.get('bill_date')}, 'issue date')
+    check(due == {parsed.get('due_date')}, 'due date')
+
+    # Buyer: the unlabelled GSTIN under CUSTOMER ID, above the SHIP TO/BY party.
+    rows = pages[0].splitlines()
+    head = [i for i, row in enumerate(rows) if re.search(r'^\s*INVOICE TO\s{2,}CUSTOMER ID\s{2,}OFFICE OF ISSUE\s{2,}BILL OF LADING NO\.\s*$', row)]
+    check(len(head) == 1, 'INVOICE TO block')
+    top = rows[head[0]]
+    left, right, bl = top.index('CUSTOMER ID'), top.index('OFFICE OF ISSUE'), top.index('BILL OF LADING NO.')
+    buyers = []
+    for row in rows[head[0]+1:head[0]+10]:
+        if 'SHIP TO/BY' in row[left-2:right]:
+            break
+        buyers += re.findall(r'\b'+gstin+r'\b', row[max(0, left-2):right])
+    else:
+        check(False, 'buyer block end (SHIP TO/BY)')
+    check(len(buyers) == 1 and buyers[0] == str(parsed.get('buyer_gstin') or '').upper(), 'buyer GSTIN')
+    check(set(re.findall(r'\b'+gstin+r'\b', text)) == suppliers | set(buyers), 'GSTIN set (an extra party registration is printed)')
+    printed_bl = re.fullmatch(r'\s*([A-Z0-9-]+)\s*', rows[head[0]+1][bl-2:])
+    check(printed_bl and compact(printed_bl[1]) == compact(parsed.get('mbl_number')), 'bill of lading number')
+
+    # Charge table on page 1: basis x rate = extended value; value x exchange rate = INR.
+    tables = [i for i, row in enumerate(rows) if re.search(r'^\s*CHARGE DESCRIPTION\s+BASIS\s+RATE\s+CUR\s+GST%\s*$', row)]
+    check(len(tables) == 1 and tables[0]+1 < len(rows) and re.fullmatch(r'\s*VALUE\s+RATE\s+INR\s*', rows[tables[0]+1]), 'charge table header')
+    body = [row for row in rows[tables[0]+2:] if row.strip()]
+    charge = re.compile(r'^\s*(\S.*?\S)\s{2,}(\d+\.\d{3})\s+(\d[\d,]*\.\d{4})\s+([A-Z]{3})\s+('+m+r')\s+(\d+\.\d{5})\s+YES\s+('+m+r')\s*$')
+    charges = []
+    while body and (row := charge.match(body[0])):
+        desc, basis, rate, currency, extended, exchange, inr = row.groups()
+        basis, rate, extended, exchange, inr = (amount(x.replace(',', '')) for x in (basis, rate, extended, exchange, inr))
+        check(cents(basis*rate) == extended and cents(extended*exchange) == inr
+              and (currency != 'INR' or exchange == 1), 'charge row arithmetic ('+desc+')')
+        charges.append((normalize(desc), inr))
+        body.pop(0)
+    sub = re.fullmatch(r'\s*SUB-TOTAL\s+('+m+r')\s*', body[0]) if body else None
+    tax = re.fullmatch(r'\s*CGST \+ SGST\s+('+m+r')\s*', body[1]) if len(body) > 1 else None
+    due_row = re.fullmatch(r'\s*AMOUNT DUE\s+INR\s+('+m+r')\s*', body[2]) if len(body) > 2 else None
+    check(charges and sub and tax and due_row, 'charge table rows (unexpected row before AMOUNT DUE)')
+    subtotal, gst_total, payable = money(sub[1]), money(tax[1]), money(due_row[1])
+    check(sum(inr for _, inr in charges) == subtotal and subtotal+gst_total == payable, 'charge table totals')
+    check(len(re.findall(r'\bAMOUNT DUE\b', text)) == 1, 'AMOUNT DUE')
+
+    # GST Detail table: per-charge taxable value, CGST, SGST and SAC.
+    detail = [(p, i) for p, page in enumerate(pages) for i, row in enumerate(page.splitlines()) if re.fullmatch(r'\s*GST Detail\s*', row)]
+    check(len(detail) == 1, 'GST Detail table')
+    rows = pages[detail[0][0]].splitlines()
+    start = next((i for i in range(detail[0][1], len(rows))
+                  if re.fullmatch(r'\s*RATE\s+AMOUNT\s+RATE\s+AMOUNT\s+RATE\s+AMOUNT\s+RATE\s+AMOUNT\s*', rows[i])), None)
+    check(start is not None, 'GST Detail header')
+    body = [row for row in rows[start+1:] if row.strip()]
+    gst_row = re.compile(r'^\s*(\S.*?\S)\s{2,}('+m+r')\s+(\d+(?:\.\d+)?)%\s+('+m+r')\s+(\d+(?:\.\d+)?)%\s+('+m+r')\s+(\d{6})\s*$')
+    lines = []
+    while body and (row := gst_row.match(body[0])):
+        desc, base, cr, ca, sr, sa, sac = row.groups()
+        base, ca, sa, cr, sr = money(base), money(ca), money(sa), Decimal(cr), Decimal(sr)
+        check(cr == sr and ca == cents(base*cr/100) and sa == cents(base*sr/100), 'GST Detail arithmetic ('+desc+')')
+        lines.append((normalize(desc), base, sac, cr+sr, ca, sa))
+        body.pop(0)
+    totals = re.fullmatch(r'\s*SUB-TOTAL\s+('+m+r')\s+('+m+r')\s*', body[0]) if body else None
+    check(lines and totals, 'GST Detail rows (unexpected row before SUB-TOTAL)')
+    cgst, sgst = money(totals[1]), money(totals[2])
+    check(sum(x[4] for x in lines) == cgst and sum(x[5] for x in lines) == sgst and cgst+sgst == gst_total, 'GST Detail totals')
+    check(sorted(charges) == sorted((x[0], x[1]) for x in lines), 'charge list (charge table and GST Detail differ)')
+
+    # Both readings must match the printed values exactly.
+    for key, value in (('subtotal', subtotal), ('tax_amount_cgst', cgst), ('tax_amount_sgst', sgst),
+                       ('tax_amount_igst', Decimal(0)), ('discounts_or_credits', Decimal(0)), ('invoice_total', payable)):
+        check(amount(parsed.get(key)) == value, key.replace('_', ' '))
+    check(str(parsed.get('currency_code') or '').upper() == 'INR', 'currency')
+    extracted = parsed.get('line_items')
+    check(isinstance(extracted, list) and len(extracted) == len(lines), 'charge count')
+    read = []
+    for line in extracted:
+        check(amount(line.get('quantity')) == 1 and (line.get('igst') is None or not amount(line['igst'])), 'charge quantity or IGST')
+        read.append((normalize(line.get('description')), amount(line.get('rate')), str(line.get('hsn_or_sac') or ''),
+                     amount(line.get('tax_percentage')), amount(line.get('cgst')), amount(line.get('sgst'))))
+    check(sorted(read) == sorted(lines), 'charge lines (description, amount, SAC, GST rate or tax)')
+    return {'method': 'pdftotext+oocl-columns', 'text_sha256': hashlib.sha256(text.encode()).hexdigest()}
+
+
 def printed_description(description, text):
     """Matches of a charge description on its printed row. A description that the
     readings joined from wrapped cells or a separate column (e.g. a month) is
@@ -381,6 +518,8 @@ def corroborate_source(parsed, text, core):
     """Require independently extracted printed evidence; absence never becomes approval."""
     if re.search(r'^\s*Total Transport Systems Limited\s*$', text, re.I | re.M):
         return corroborate_total_transport(parsed, text)
+    if is_oocl_layout(text):
+        return corroborate_oocl(parsed, text)
     compact = lambda value: re.sub(r'[^A-Z0-9]', '', str(value).upper())
     tokens = set(re.findall(r'[A-Z0-9]+(?:[-/][A-Z0-9]+)*', text.upper()))
     identities = set()

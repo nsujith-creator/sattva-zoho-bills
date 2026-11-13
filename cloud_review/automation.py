@@ -23,6 +23,8 @@ from pathlib import Path
 MODEL = 'claude-haiku-4-5'
 OWNER_GSTIN = '27AEFPN9399L1ZI'
 OIDAR = r'99\d{2}[A-Z]{3}\d{5}OS[A-Z0-9]'  # India OIDAR registration of an overseas supplier.
+INDIAN_GSTIN = r'(?:0[1-9]|[1-3]\d)[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]'  # Regular Indian registration.
+HEAD_TOTAL_RATES = {Decimal(x) for x in ('3', '5', '12', '18', '28', '40')}
 POLICY = 'owner-cloud-automatic-posting-2026-10-28'
 MAX_OUTPUT = 6000
 MAX_INPUT = 40000
@@ -1124,7 +1126,33 @@ def reconcile_readings(first, second, text, core):
                                             'raw': line.get(head), 'printed': proof['amount'],
                                             'row_sha256': proof['row_sha256']})
                     line[head] = proof['amount']
+        # A reading that gave the per-head rate (OOCL prints CGST 9% and SGST 9% in separate
+        # columns) is recognised only when each printed head amount equals line x that rate,
+        # which cannot hold for the total; the doubled total must still pass the printed checks.
+        for index, line in enumerate(parsed['line_items']):
+            try:
+                base, head = amount(line.get('rate')), Decimal(str(line.get('tax_percentage')))
+                cgst, sgst = (amount(line[k]) if line.get(k) is not None else None for k in ('cgst', 'sgst'))
+                igst = amount(line['igst']) if line.get('igst') is not None else Decimal(0)
+            except (Hold, InvalidOperation, ValueError, TypeError):
+                continue
+            if (base > 0 and cgst is not None and cgst > 0 and cgst == sgst and not igst
+                    and head*2 in HEAD_TOTAL_RATES
+                    and (base*head/100).quantize(Decimal('.01'), rounding=ROUND_HALF_UP) == cgst):
+                corrections.append({'reading': label, 'line': index, 'field': 'tax_percentage',
+                                    'raw': line.get('tax_percentage'), 'printed': str(head*2), 'reason': 'per-head CGST/SGST rate'})
+                line['tax_percentage'] = str((head*2).normalize())
         sources.append(corroborate_source(parsed, text, core))
+        # After printed proof: a regular Indian GSTIN charging Indian GST is a domestic supplier,
+        # whatever "agent for the overseas carrier" wording a reading saw.
+        try:
+            charged = any(amount(parsed.get(k)) for k in ('tax_amount_cgst', 'tax_amount_sgst', 'tax_amount_igst'))
+        except Hold:
+            charged = False
+        if (charged and re.fullmatch(INDIAN_GSTIN, str(parsed.get('vendor_gstin') or '').upper())
+                and parsed.get('is_overseas') is not False):
+            corrections.append({'reading': label, 'field': 'is_overseas', 'raw': parsed.get('is_overseas'), 'printed': 'Indian GSTIN charging GST'})
+            parsed['is_overseas'] = False
         # After printed proof only: an OIDAR registration on the PDF is an overseas supplier,
         # and units (e.g. 40000 emails) in quantity do not change a printed line total.
         if re.fullmatch(OIDAR, str(parsed.get('vendor_gstin') or '').upper()) and parsed.get('is_overseas') is not True:

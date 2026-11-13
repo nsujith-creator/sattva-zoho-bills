@@ -256,3 +256,35 @@ class PrintedCredit(unittest.TestCase):
         for reading in (self.credit_invoice(currency='INR'), self.credit_invoice(total='14.00')):
             with self.subTest(reading=reading['currency_code']+reading['invoice_total']), self.assertRaises(a.Hold):
                 a.validate(reading, self.core, {VENDOR: {'id': '321', 'gst_no': ''}})
+
+
+class PrintedCreditReviewFindings(PrintedCredit):
+    def test_reading_notes_that_only_describe_the_proven_credit_are_accepted(self):
+        reading = self.credit_invoice(); reading['issues'] = ['Included usage credit of $5.00 applied to subtotal']
+        self.assertTrue(a.reverse_charge_note_only(reading))
+        for note in ('Credit amount unclear', 'Discount inferred from total'):
+            with self.subTest(note=note):
+                self.assertFalse(a.reverse_charge_note_only(dict(reading, issues=[note])))
+        self.assertFalse(a.reverse_charge_note_only(dict(self.credit_invoice(total='14.00'), issues=reading['issues'])))
+
+    def test_explicit_credit_label_row_with_the_exact_credit_is_accepted(self):
+        self.assertTrue(a.corroborate_source(self.credit_invoice(), self.credit_text(
+            'Credit                                                     -$5.00'), self.core))
+        with self.assertRaises(a.Hold):
+            a.corroborate_source(self.credit_invoice(), self.credit_text(
+                'Credit                                                     -$5.00\n   Adjustment   -$1.00'), self.core)
+
+    def test_credit_evidence_must_be_in_the_invoice_currency(self):
+        with self.assertRaisesRegex(a.Hold, 'credit is not printed'):
+            a.corroborate_source(self.credit_invoice(), self.credit_text(
+                'Included usage                                             -€5.00'), self.core)
+
+    def test_zero_line_kept_by_one_reading_and_omitted_by_the_other_still_agree(self):
+        first = self.credit_invoice()
+        zero = dict(first['line_items'][0], description='Prepaid usage, Synthetic plan', rate='0.00')
+        second = copy.deepcopy(first)
+        text = self.credit_text().replace('Prepaid usage, Synthetic plan                    1    $20.00      0%             $20.00',
+            'Prepaid usage, Synthetic plan                    1    $20.00      0%             $20.00\nUnused storage                                   0    $0.00       0%             $0.00')
+        second['line_items'].append(dict(zero, description='Unused storage'))
+        parsed, evidence = a.reconcile_readings(first, second, text, self.core)
+        self.assertEqual(1, len(parsed['line_items']))

@@ -90,7 +90,8 @@ Use decimal strings without commas or symbols. Zero only if the field is clearly
 If multiple invoices/credit notes occur, set multi_invoice_count to their count and confidence low.
 Identify credit notes, unclear digits, discounts, adjustments and conflicting figures in issues.
 List in issues ONLY problems that should stop posting; never list normal observations there. Normal, NOT issues: an overseas supplier invoice that charges no Indian GST (the buyer self-assesses it under reverse charge),
-even if a note says GST applies to unregistered customers; and a unit price shown as a dash or blank when the line amount is printed.
+even if a note says GST applies to unregistered customers; a unit price shown as a dash or blank when the line amount is printed; and a credit printed as a deduction
+(for example "included usage ($5.00 off)"), which belongs in discounts_or_credits.
 No account choices, tax eligibility decisions, or permission to post are requested from you.'''
 
 
@@ -509,6 +510,7 @@ def printed_description(description, text):
     # A row's whole first cell plus the whole line printed directly under it (for
     # example a billing period "Oct 10–Nov 10, 2026"), nothing more and nothing less.
     for size in range(len(tokens)-1, 0, -1):
+        wrapped = []
         for match in re.finditer(r'\W+'.join(map(re.escape, tokens[:size])), text, re.I):
             start = text.rfind('\n', 0, match.start())+1
             end = row_end(text, match.start())
@@ -516,7 +518,9 @@ def printed_description(description, text):
                 continue
             following = text[end+1:row_end(text, end+1)] if end < len(text) else ''
             if re.findall(r'[A-Z0-9]+', following.upper()) == tokens[size:]:
-                return [match]
+                wrapped.append(match)
+        if wrapped:
+            return wrapped
     return []
 
 
@@ -619,7 +623,8 @@ def corroborate_source(parsed, text, core):
                 following = next((value.strip() for value in source_rows[index+1:index+4] if value.strip()), '')
                 if re.fullmatch(r'[-+]?\d[\d,]*(?:\.\d{1,2})?\s*(?:[A-Z]{3})?', following):
                     values.append(re.match(r'[-+]?\d[\d,]*(?:\.\d{1,2})?', following)[0])
-            if any(Decimal(value.replace(',', '')) for value in values):
+            nonzero = {abs(Decimal(value.replace(',', ''))) for value in values} - {Decimal(0)}
+            if nonzero and not (verified_credit(parsed) and nonzero == {verified_credit(parsed)}):
                 raise Hold('Printed discount, credit or adjustment requires review even if extraction reports zero.')
     for key in MONEY:
         value = amount(parsed.get(key))
@@ -628,7 +633,9 @@ def corroborate_source(parsed, text, core):
     credit = amount(parsed.get('discounts_or_credits'))
     if credit:
         shown = re.escape(f'{credit:,.2f}')
-        if not re.search(r'(?:-|−)\s*(?:[$€£₹]|USD\s*|EUR\s*|GBP\s*)?'+shown+r'(?!\d)|\(\s*[$€£₹]?'+shown+r'\s+off\s*\)', text, re.I):
+        code = str(parsed.get('currency_code') or '').upper()
+        mark = '(?:'+re.escape({'USD': '$', 'EUR': '€', 'GBP': '£', 'INR': '₹'}.get(code, code))+'|'+re.escape(code)+r'\s*)'
+        if not re.search(r'(?:-|−)\s*'+mark+r'\s*'+shown+r'(?!\d)|\(\s*'+mark+r'\s*'+shown+r'\s+off\s*\)', text, re.I):
             raise Hold('The extracted credit is not printed as a deduction on the PDF.')
     # Header labels distinguish the payable from other perfectly plausible printed amounts.
     labels = {'subtotal': r'(?:sub\s*total|total\s+base\s+amount|total\s+excluding\s+tax)',
@@ -1039,23 +1046,43 @@ def cma_printed_charge_taxes(line, text):
     return found
 
 
+def verified_credit(reading):
+    """The printed credit a foreign-currency, untaxed reading carries when its own arithmetic
+    proves it (subtotal - credit = total); otherwise zero. PDF proof is checked separately."""
+    try:
+        credit, subtotal = amount(reading.get('discounts_or_credits') or '0'), amount(reading.get('subtotal'))
+        if (str(reading.get('currency_code') or '').upper() in ('', 'INR') or not 0 < credit < subtotal
+                or any(amount(reading.get(k)) for k in ('tax_amount_cgst', 'tax_amount_sgst', 'tax_amount_igst'))
+                or subtotal - credit != amount(reading.get('invoice_total'))):
+            return Decimal(0)
+        return credit
+    except Hold:
+        return Decimal(0)
+
+
 def reverse_charge_note_only(reading):
-    """True when a reading's issues only describe reverse charge on an untaxed overseas invoice.
-    Any doubt word, any printed tax, a non-OIDAR supplier or less than high confidence keeps the hold."""
+    """True when a high-confidence reading's issues only describe normal, separately proven facts:
+    reverse charge on an untaxed OIDAR-registered overseas invoice, or a printed credit whose
+    arithmetic the reading itself proves. Any doubt word keeps the hold."""
     issues = reading.get('issues')
     if issues in ([], '', None):
         return True
     if reading.get('confidence') != 'high' or not isinstance(issues, list) or not issues:
         return False
-    if not re.fullmatch(OIDAR, str(reading.get('vendor_gstin') or '').upper()):
-        return False
     try:
-        if any(amount(reading.get(k)) for k in ('tax_amount_cgst', 'tax_amount_sgst', 'tax_amount_igst')):
-            return False
+        untaxed = not any(amount(reading.get(k)) for k in ('tax_amount_cgst', 'tax_amount_sgst', 'tax_amount_igst'))
     except Hold:
         return False
-    doubt = r'unclear|illegible|unreadable|conflict|mismatch|differ|missing|discount|credit|multiple|ambiguous|infer|guess|cannot|could not|unsure|uncertain|assum|estimat|error|wrong|incorrect|verify|check'
-    return all(isinstance(i, str) and re.search(r'reverse[ -]charge', i, re.I) and not re.search(doubt, i, re.I) for i in issues)
+    oidar = bool(re.fullmatch(OIDAR, str(reading.get('vendor_gstin') or '').upper()))
+    credit = verified_credit(reading)
+    doubt = r'unclear|illegible|unreadable|conflict|mismatch|differ|missing|multiple|ambiguous|infer|guess|cannot|could not|unsure|uncertain|assum|estimat|error|wrong|incorrect|verify|check'
+    def normal(note):
+        if not isinstance(note, str) or re.search(doubt, note, re.I):
+            return False
+        if oidar and untaxed and re.search(r'reverse[ -]charge', note, re.I) and not re.search(r'discount|credit', note, re.I):
+            return True
+        return bool(credit) and bool(re.search(r'credit|discount|\boff\b|included usage|deduct', note, re.I))
+    return all(normal(note) for note in issues)
 
 
 def reconcile_readings(first, second, text, core):
@@ -1101,6 +1128,11 @@ def reconcile_readings(first, second, text, core):
                 if units.is_finite() and (units > 0 or (units == 0 and not amount(line.get('rate')))):
                     corrections.append({'reading': label, 'line': index, 'field': 'quantity', 'raw': line.get('quantity'), 'printed': 'line total'})
                     line['quantity'] = 1
+        if str(parsed.get('currency_code') or '').upper() not in ('', 'INR'):
+            kept = [x for x in parsed['line_items'] if amount(x.get('rate'))]
+            if kept and len(kept) != len(parsed['line_items']):
+                corrections.append({'reading': label, 'field': 'line_items', 'raw': len(parsed['line_items']), 'printed': 'zero-amount lines left out'})
+                parsed['line_items'] = kept
         derived.append(parsed)
     # CMA's printed principal and the same principal qualified C/O CCAI are
     # equivalent only after both full names and the SAME supplier GSTIN pass PDF proof.

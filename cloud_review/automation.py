@@ -506,6 +506,17 @@ def printed_description(description, text):
         found = [m for m in re.finditer(pattern, text, re.I) if text.count('\n', m.start(), m.end()) <= 2]
         if found:
             return found
+    # A row's whole first cell plus the whole line printed directly under it (for
+    # example a billing period "Oct 10–Nov 10, 2026"), nothing more and nothing less.
+    for size in range(len(tokens)-1, 0, -1):
+        for match in re.finditer(r'\W+'.join(map(re.escape, tokens[:size])), text, re.I):
+            start = text.rfind('\n', 0, match.start())+1
+            end = row_end(text, match.start())
+            if text[start:match.start()].strip() or not re.match(r'[)\].,:;]*(?:\s{2,}|\s*$)', text[match.end():end]):
+                continue
+            following = text[end+1:row_end(text, end+1)] if end < len(text) else ''
+            if re.findall(r'[A-Z0-9]+', following.upper()) == tokens[size:]:
+                return [match]
     return []
 
 
@@ -614,6 +625,11 @@ def corroborate_source(parsed, text, core):
         value = amount(parsed.get(key))
         if value and value not in numbers:
             raise Hold('Printed '+key.replace('_', ' ')+' is not evidenced in the PDF text.')
+    credit = amount(parsed.get('discounts_or_credits'))
+    if credit:
+        shown = re.escape(f'{credit:,.2f}')
+        if not re.search(r'(?:-|−)\s*(?:[$€£₹]|USD\s*|EUR\s*|GBP\s*)?'+shown+r'(?!\d)|\(\s*[$€£₹]?'+shown+r'\s+off\s*\)', text, re.I):
+            raise Hold('The extracted credit is not printed as a deduction on the PDF.')
     # Header labels distinguish the payable from other perfectly plausible printed amounts.
     labels = {'subtotal': r'(?:sub\s*total|total\s+base\s+amount|total\s+excluding\s+tax)',
               'invoice_total': r'(?:grand\s+total|total\s+payable\s+amount|total\s+including\s+tax|invoice\s+total|(?<!sub\s)(?<!sub)\btotal(?=\s+(?:₹|rs\.?\s*|inr\s*|\$\s*)\d)|(?<!sub\s)(?<!sub)\btotal\s+in\s+inr(?=\s+₹?\s*\d))',
@@ -1082,7 +1098,7 @@ def reconcile_readings(first, second, text, core):
                     units = Decimal(str(line.get('quantity')))
                 except (InvalidOperation, ValueError):
                     units = Decimal(0)
-                if units.is_finite() and units > 0:
+                if units.is_finite() and (units > 0 or (units == 0 and not amount(line.get('rate')))):
                     corrections.append({'reading': label, 'line': index, 'field': 'quantity', 'raw': line.get('quantity'), 'printed': 'line total'})
                     line['quantity'] = 1
         derived.append(parsed)
@@ -1156,7 +1172,8 @@ def bank_booking(parsed, bank):
     if currency not in BANK_RATE_BOUNDS:
         raise Hold('Bank-debit booking supports USD, EUR and GBP invoices only; '+currency+' needs review.')
     foreign, payment, charges = amount(parsed['invoice_total']), amount(bank['transaction_inr']), amount(bank['charges_inr'])
-    if any(amount(parsed[k]) for k in ('tax_amount_cgst', 'tax_amount_sgst', 'tax_amount_igst')) or amount(parsed['subtotal']) != foreign:
+    gross, credit = amount(parsed['subtotal']), amount(parsed.get('discounts_or_credits') or '0')
+    if any(amount(parsed[k]) for k in ('tax_amount_cgst', 'tax_amount_sgst', 'tax_amount_igst')) or gross - credit != foreign:
         raise Hold('Overseas invoice prints tax or adjustments; bank-debit booking needs review.')
     low, high = BANK_RATE_BOUNDS[currency]
     rate = payment/foreign
@@ -1166,14 +1183,18 @@ def bank_booking(parsed, bank):
     if charges < 0 or charges > payment/10:
         raise NeedsBankAmounts('Bank charges must be between 0 and 10% of the payment debit. Check and enter them again.')
     booking = copy.deepcopy(parsed)
-    lines, running = booking['line_items'], Decimal(0)
+    # A printed credit (owner rule 13 Nov 2026) reduces every charged line in proportion,
+    # so the lines sum exactly to the bank payment; zero-amount printed lines are left out.
+    booking['line_items'] = lines = [line for line in booking['line_items'] if amount(line['rate'])]
+    running = Decimal(0)
     for index, line in enumerate(lines):
-        value = payment-running if index == len(lines)-1 else (amount(line['rate'])*payment/foreign).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+        value = payment-running if index == len(lines)-1 else (amount(line['rate'])*payment/gross).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
         if value <= 0:
             raise Hold('A converted invoice line is not positive; bank-debit booking needs review.')
         line['rate'] = str(value); running += value
-    booking.update(currency_code='INR', subtotal=str(payment), invoice_total=str(payment),
-                   bank_note='Original '+currency+' '+str(foreign)+' paid by bank debit INR '+str(payment)
+    credit_note = (' after printed credit '+currency+' '+str(credit)+' on charges of '+currency+' '+str(gross)) if credit else ''
+    booking.update(currency_code='INR', subtotal=str(payment), invoice_total=str(payment), discounts_or_credits='0.00',
+                   bank_note='Original '+currency+' '+str(foreign)+credit_note+' paid by bank debit INR '+str(payment)
                    +' (effective '+str(rate.quantize(Decimal('.0001')))+' INR/'+currency+'); bank charges INR '+str(charges)+'.')
     return booking
 
@@ -1204,7 +1225,10 @@ def validate(parsed, core, vendors, check_zoho_rounding=True, bank=None):
         raise Hold('The CMA CGM bill-of-lading reference is not an invoice number.')
     for key in MONEY:
         parsed[key] = str(amount(parsed.get(key)))
-    if amount(parsed['discounts_or_credits']) != 0:
+    credit = amount(parsed['discounts_or_credits'])
+    if credit and not (parsed['currency_code'] != 'INR' and credit < amount(parsed['subtotal'])
+                       and not any(amount(parsed[k]) for k in ('tax_amount_cgst', 'tax_amount_sgst', 'tax_amount_igst'))
+                       and amount(parsed['subtotal']) - credit == amount(parsed['invoice_total'])):
         raise Hold('A printed discount or credit requires an exact supported allocation.')
     if amount(parsed['invoice_total']) <= 0:
         raise Hold('Invoice total must be positive.')
@@ -1221,7 +1245,7 @@ def validate(parsed, core, vendors, check_zoho_rounding=True, bank=None):
             raise Hold('An unsupported or unreadable line GST rate needs review.')
     if sum(amount(x['rate']) for x in lines) != amount(parsed['subtotal']):
         raise Hold('Printed subtotal and charge lines differ.')
-    if sum(amount(parsed[k]) for k in ('subtotal', 'tax_amount_cgst', 'tax_amount_sgst', 'tax_amount_igst')) != amount(parsed['invoice_total']):
+    if sum(amount(parsed[k]) for k in ('subtotal', 'tax_amount_cgst', 'tax_amount_sgst', 'tax_amount_igst')) - credit != amount(parsed['invoice_total']):
         raise Hold('Printed GST components and invoice total differ.')
     vid, name, match, gst = core.match_vendor_tiered(parsed['vendor_name'], vendors, parsed.get('vendor_gstin'))
     if (not vid or match not in ('exact', 'alias')) and parsed['currency_code'] != 'INR':

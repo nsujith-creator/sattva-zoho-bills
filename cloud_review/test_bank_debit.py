@@ -222,3 +222,37 @@ class AccountRouting(unittest.TestCase):
         for (vendor, sac), account in cases.items():
             with self.subTest(vendor=vendor, sac=sac):
                 self.assertEqual(account, a.line_account(vendor, sac))
+
+
+class PrintedCredit(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.core = core_fixture()
+
+    def credit_invoice(self, credit='5.00', total='15.00', currency='USD'):
+        reading = overseas_invoice('20.00')
+        reading.update(currency_code=currency, discounts_or_credits=credit, invoice_total=total)
+        return reading
+
+    def credit_text(self, line='Included usage ($5.00 off)                                 -$5.00'):
+        return overseas_text('20.00').replace(
+            '                                     Total                                           $20.00',
+            '                                     '+line+'\n                                     Total                                           $15.00').replace(
+            'Amount due                                  $20.00 USD', 'Amount due                                  $15.00 USD').replace(
+            '$20.00 USD due', '$15.00 USD due')
+
+    def test_printed_credit_is_netted_into_the_bank_payment(self):
+        reading = self.credit_invoice()
+        self.assertTrue(a.corroborate_source(reading, self.credit_text(), self.core))
+        booking = a.bank_booking(reading, {'transaction_inr': '1450.00', 'charges_inr': '50.00'})
+        self.assertEqual(['1450.00'], [x['rate'] for x in booking['line_items']])
+        self.assertIn('after printed credit USD 5.00 on charges of USD 20.00', booking['bank_note'])
+
+    def test_credit_not_printed_as_a_deduction_holds(self):
+        with self.assertRaisesRegex(a.Hold, 'credit is not printed'):
+            a.corroborate_source(self.credit_invoice(), self.credit_text('Included usage                                             5.00'), self.core)
+
+    def test_credit_on_inr_invoice_or_with_wrong_arithmetic_still_holds(self):
+        for reading in (self.credit_invoice(currency='INR'), self.credit_invoice(total='14.00')):
+            with self.subTest(reading=reading['currency_code']+reading['invoice_total']), self.assertRaises(a.Hold):
+                a.validate(reading, self.core, {VENDOR: {'id': '321', 'gst_no': ''}})

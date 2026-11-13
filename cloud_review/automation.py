@@ -1450,7 +1450,7 @@ def verify_detail(core, bid, payload, parsed, detail, owned=True, bank=None):
         check['errors'].append('line_count_mismatch')
     allocation_groups, allocation_differences, line_tax_deltas, zoho_line_heads = {}, [], [], []
     complete_line_taxes = len(detail.get('line_items', [])) == len(payload['line_items'])
-    for sent, saved, source in zip(payload['line_items'], detail.get('line_items', []), parsed['line_items']):
+    for line_index, (sent, saved, source) in enumerate(zip(payload['line_items'], detail.get('line_items', []), parsed['line_items'])):
         for field in ('rate', 'quantity'):
             try:
                 value = Decimal(str(saved.get(field)))
@@ -1501,8 +1501,8 @@ def verify_detail(core, bid, payload, parsed, detail, owned=True, bank=None):
             for head, actual in heads.items():
                 charged = (head == 'igst') == (mode == 'igst')
                 if charged and owned:
-                    zoho_line_heads.append((sent.get('tax_id'), Decimal(str(source['tax_percentage'])), head,
-                                            actual, amount(sent['rate'])*amount(sent['quantity'])))
+                    zoho_line_heads.append((line_index, sent.get('tax_id'), Decimal(str(source['tax_percentage'])), head, actual,
+                                            amount(sent['rate'])*amount(sent['quantity']), source.get(head)))
                 divisor = 100 if head == 'igst' else 200
                 expected_head = (amount(sent['rate'])*Decimal(str(source['tax_percentage']))/divisor).quantize(Decimal('.01'), rounding=ROUND_HALF_UP) if charged else Decimal(0)
                 printed = amount(source[head]) if source.get(head) is not None else expected_head
@@ -1602,18 +1602,24 @@ def accept_zoho_group_rounding(check, payload, parsed, zoho_line_heads, complete
     """Owner rule 13 Nov 2026, NEW bills from any supplier: the invoice prints GST rounded per
     line, while Zoho may round once per tax group on the bill total. Zoho's saved tax is accepted
     only when it is EXACTLY that group-level rounding of the same printed lines: every GST head,
-    the tax total and the payable total equal it to the paisa, and each Zoho line tax is within one
-    paisa of the printed line tax while the lines of each group sum exactly to the group figure.
-    Subtotal, line amounts, rates, tax IDs, identity and the original attachment stay exact."""
+    the tax total and the payable total equal it to the paisa, every charged line carries a
+    PRINTED line tax per head, each Zoho line tax is within one paisa of it, and the lines of each
+    group sum exactly to the group figure. Only the charged heads' errors can be accepted; a tax on
+    an uncharged head, or any other difference, keeps every error."""
+    try:
+        mode_igst = bool(amount(parsed.get('tax_amount_igst')))
+    except Hold:
+        return
+    heads = ('igst',) if mode_igst else ('cgst', 'sgst')
+    factor = len(heads)  # IGST is one head at the full rate; CGST+SGST split it in two.
     rounding = ('tax_total', 'tax_amount_cgst', 'tax_amount_sgst', 'tax_amount_igst', 'total')
-    line_errors = {'line_cgst_mismatch', 'line_sgst_mismatch', 'line_igst_mismatch'}
+    line_errors = {'line_'+h+'_mismatch' for h in heads}
     is_rounding = lambda e: e in line_errors or any(e.startswith(n+'_mismatch') for n in rounding)
     if not check['errors'] or not all(is_rounding(e) for e in check['errors']):
-        return  # Nothing to accept, or something other than tax rounding differs: keep every error.
+        return  # Nothing to accept, or something other than charged-head rounding differs.
+    if not complete_line_taxes or len(zoho_line_heads) != len(payload['line_items'])*len(heads):
+        return  # Complete line evidence from Zoho is required.
     cents = lambda value: value.quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
-    mode_igst = bool(amount(parsed.get('tax_amount_igst')))
-    factor = 1 if mode_igst else 2
-    heads = ('igst',) if mode_igst else ('cgst', 'sgst')
     groups = {}
     for line, source in zip(payload['line_items'], parsed['line_items']):
         rate = Decimal(str(source['tax_percentage']))
@@ -1625,35 +1631,34 @@ def accept_zoho_group_rounding(check, payload, parsed, zoho_line_heads, complete
     printed = {h: amount(parsed.get('tax_amount_'+h)) for h in heads}
     if any(printed[h] != sum(line_sum for _, line_sum in groups.values()) for h in heads) or group_head == printed[heads[0]]:
         return
-    expected = {'tax_amount_'+h: group_head for h in heads}
+    expected = {'tax_amount_cgst': Decimal(0), 'tax_amount_sgst': Decimal(0), 'tax_amount_igst': Decimal(0)}
+    expected.update({'tax_amount_'+h: group_head for h in heads})
     expected['tax_total'] = group_head*factor
     expected['total'] = amount(parsed.get('subtotal'))+group_head*factor
-    for name in ('tax_amount_cgst', 'tax_amount_sgst', 'tax_amount_igst'):
-        expected.setdefault(name, Decimal(0))
     differences = {}
     for name in rounding:
         item = check['checks'].get(name)
-        if not item or item.get('actual') is None:
-            return
-        if Decimal(str(item['actual'])) != expected[name]:
+        if not item or item.get('actual') is None or Decimal(str(item['actual'])) != expected[name]:
             return
         if not item.get('ok'):
             differences[name] = str(Decimal(str(item['actual']))-Decimal(str(item['expected'])))
-    if complete_line_taxes and zoho_line_heads:
-        sums = {}
-        for tax_id, rate, head, actual, base in zoho_line_heads:
-            if abs(actual-cents(base*rate/100/factor)) > Decimal('.01'):
-                return
-            sums[(tax_id, rate, head)] = sums.get((tax_id, rate, head), Decimal(0))+actual
-        for (tax_id, rate, head), total in sums.items():
-            if total != cents(groups[(tax_id, rate)][0]*rate/100/factor):
-                return
-    elif line_errors & set(check['errors']):
+    sums, line_differences = {}, []
+    for index, tax_id, rate, head, actual, base, printed_line in zoho_line_heads:
+        if printed_line is None:
+            return  # The printed line tax is required evidence, never a recomputed figure.
+        printed_line = amount(printed_line)
+        if printed_line != cents(base*rate/100/factor) or abs(actual-printed_line) > Decimal('.01'):
+            return
+        if actual != printed_line:
+            line_differences.append([index, head, str(printed_line), str(actual)])
+        sums[(tax_id, rate, head)] = sums.get((tax_id, rate, head), Decimal(0))+actual
+    if any(total != cents(groups[(tax_id, rate)][0]*rate/100/factor) for (tax_id, rate, _), total in sums.items()):
         return
     check['errors'] = [e for e in check['errors'] if not is_rounding(e)]
     check['zoho_rounding_policy'] = {'policy': 'owner-proven-zoho-group-tax-rounding-2026-11-13',
                                      'printed_head': str(printed[heads[0]]), 'zoho_group_head': str(group_head),
-                                     'accepted_differences': differences}
+                                     'accepted_differences': differences,
+                                     'line_tax_differences': line_differences}
 
 
 class Engine:

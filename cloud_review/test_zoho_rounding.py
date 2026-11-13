@@ -12,7 +12,7 @@ def two_line_invoice():
     # Printed per line: 100.05 x 9% = 9.0045 -> 9.00 per head, twice = 18.00.
     # Zoho on the group: 200.10 x 9% = 18.009 -> 18.01 per head.
     parsed = invoice()
-    line = dict(parsed['line_items'][0], rate='100.05')
+    line = dict(parsed['line_items'][0], rate='100.05', cgst='9.00', sgst='9.00', igst=None)
     parsed['line_items'] = [dict(line, description='Documentation'), dict(line, description='Handling')]
     parsed.update(subtotal='200.10', tax_amount_cgst='18.00', tax_amount_sgst='18.00', invoice_total='236.10')
     return parsed
@@ -45,6 +45,28 @@ class ZohoGroupRounding(unittest.TestCase):
         policy = check['zoho_rounding_policy']
         self.assertEqual(('18.00', '18.01'), (policy['printed_head'], policy['zoho_group_head']))
         self.assertEqual('0.02', policy['accepted_differences']['total'])
+        self.assertEqual([[1, 'cgst', '9.00', '9.01'], [1, 'sgst', '9.00', '9.01']], policy['line_tax_differences'])
+
+    def test_printed_line_taxes_are_required_evidence(self):
+        for line in self.parsed['line_items']:
+            line['cgst'] = line['sgst'] = None
+        check = self.verify('18.01', ['9.00', '9.01'])
+        self.assertFalse(check['ok'])
+        self.assertNotIn('zoho_rounding_policy', check)
+
+    def test_tax_on_an_uncharged_head_is_never_accepted(self):
+        detail = readback(self.payload, '18.01', ['9.00', '9.01'])
+        detail['line_items'][0]['line_item_taxes'].append({'tax_name': 'IGST18', 'tax_amount': '0.01'})
+        check = a.verify_detail(self.core, '456', self.payload, self.parsed, detail)
+        self.assertFalse(check['ok'])
+        self.assertIn('line_igst_mismatch', check['errors'])
+        self.assertNotIn('zoho_rounding_policy', check)
+
+    def test_complete_line_taxes_from_zoho_are_required(self):
+        detail = readback(self.payload, '18.01', ['9.00', '9.01'])
+        del detail['line_items'][0]['line_item_taxes']
+        check = a.verify_detail(self.core, '456', self.payload, self.parsed, detail)
+        self.assertFalse(check['ok'])
 
     def test_printed_figures_still_verify_without_the_policy(self):
         check = self.verify('18.00', ['9.00', '9.00'])

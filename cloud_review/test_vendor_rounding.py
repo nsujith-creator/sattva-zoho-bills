@@ -18,7 +18,8 @@ class TotalTransportRounding(unittest.TestCase):
         # Two 9% lines whose printed per-line taxes sum one paisa below Zoho's group rounding.
         value = invoice()
         value.update(vendor_name='SYNTHETIC FREIGHT VENDOR', vendor_gstin=gstin)
-        value['line_items'] = [dict(value['line_items'][0], description='Charge '+str(i), rate='100.05')
+        value['line_items'] = [dict(value['line_items'][0], description='Charge '+str(i), rate='100.05',
+                                    cgst='9.00', sgst='9.00', igst=None)
                                for i in (1, 2)]
         value.update(subtotal='200.10', tax_amount_cgst='18.00', tax_amount_sgst='18.00', invoice_total='236.10')
         return value

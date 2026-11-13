@@ -1448,7 +1448,7 @@ def verify_detail(core, bid, payload, parsed, detail, owned=True, bank=None):
         check['errors'].append('existing_bill_is_void')
     if len(detail.get('line_items', [])) != len(payload['line_items']):
         check['errors'].append('line_count_mismatch')
-    allocation_groups, allocation_differences, line_tax_deltas = {}, [], []
+    allocation_groups, allocation_differences, line_tax_deltas, zoho_line_heads = {}, [], [], []
     complete_line_taxes = len(detail.get('line_items', [])) == len(payload['line_items'])
     for sent, saved, source in zip(payload['line_items'], detail.get('line_items', []), parsed['line_items']):
         for field in ('rate', 'quantity'):
@@ -1500,6 +1500,9 @@ def verify_detail(core, bid, payload, parsed, detail, owned=True, bank=None):
                 complete_line_taxes = False
             for head, actual in heads.items():
                 charged = (head == 'igst') == (mode == 'igst')
+                if charged and owned:
+                    zoho_line_heads.append((sent.get('tax_id'), Decimal(str(source['tax_percentage'])), head,
+                                            actual, amount(sent['rate'])*amount(sent['quantity'])))
                 divisor = 100 if head == 'igst' else 200
                 expected_head = (amount(sent['rate'])*Decimal(str(source['tax_percentage']))/divisor).quantize(Decimal('.01'), rounding=ROUND_HALF_UP) if charged else Decimal(0)
                 printed = amount(source[head]) if source.get(head) is not None else expected_head
@@ -1524,6 +1527,8 @@ def verify_detail(core, bid, payload, parsed, detail, owned=True, bank=None):
             check['errors'].extend('line_'+head+'_mismatch' for head, _ in allocation_differences)
     if owned and str(parsed.get('vendor_gstin') or '').upper()[2:12] == TOTAL_TRANSPORT_PAN:
         accept_zoho_tax_rounding(check, line_tax_deltas)
+    elif owned and not payload.get('is_reverse_charge_applied'):
+        accept_zoho_group_rounding(check, payload, parsed, zoho_line_heads, complete_line_taxes)
     check['ok'] = not check['errors']
     return check
 
@@ -1591,6 +1596,64 @@ def accept_zoho_tax_rounding(check, line_tax_deltas):
     check['vendor_rounding_policy'] = {'policy': 'owner-total-transport-zoho-rounding-within-inr-1-2026-10-30',
                                        'accepted_differences': {k: str(v) for k, v in differences.items()},
                                        'line_tax_differences': [[h, str(d)] for h, d in line_tax_deltas]}
+
+
+def accept_zoho_group_rounding(check, payload, parsed, zoho_line_heads, complete_line_taxes):
+    """Owner rule 13 Nov 2026, NEW bills from any supplier: the invoice prints GST rounded per
+    line, while Zoho may round once per tax group on the bill total. Zoho's saved tax is accepted
+    only when it is EXACTLY that group-level rounding of the same printed lines: every GST head,
+    the tax total and the payable total equal it to the paisa, and each Zoho line tax is within one
+    paisa of the printed line tax while the lines of each group sum exactly to the group figure.
+    Subtotal, line amounts, rates, tax IDs, identity and the original attachment stay exact."""
+    rounding = ('tax_total', 'tax_amount_cgst', 'tax_amount_sgst', 'tax_amount_igst', 'total')
+    line_errors = {'line_cgst_mismatch', 'line_sgst_mismatch', 'line_igst_mismatch'}
+    is_rounding = lambda e: e in line_errors or any(e.startswith(n+'_mismatch') for n in rounding)
+    if not check['errors'] or not all(is_rounding(e) for e in check['errors']):
+        return  # Nothing to accept, or something other than tax rounding differs: keep every error.
+    cents = lambda value: value.quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+    mode_igst = bool(amount(parsed.get('tax_amount_igst')))
+    factor = 1 if mode_igst else 2
+    heads = ('igst',) if mode_igst else ('cgst', 'sgst')
+    groups = {}
+    for line, source in zip(payload['line_items'], parsed['line_items']):
+        rate = Decimal(str(source['tax_percentage']))
+        group = groups.setdefault((line.get('tax_id'), rate), [Decimal(0), Decimal(0)])
+        base = amount(line['rate'])*amount(line['quantity'])
+        group[0] += base
+        group[1] += cents(base*rate/100/factor)
+    group_head = sum(cents(base*rate/100/factor) for (_, rate), (base, _) in groups.items())
+    printed = {h: amount(parsed.get('tax_amount_'+h)) for h in heads}
+    if any(printed[h] != sum(line_sum for _, line_sum in groups.values()) for h in heads) or group_head == printed[heads[0]]:
+        return
+    expected = {'tax_amount_'+h: group_head for h in heads}
+    expected['tax_total'] = group_head*factor
+    expected['total'] = amount(parsed.get('subtotal'))+group_head*factor
+    for name in ('tax_amount_cgst', 'tax_amount_sgst', 'tax_amount_igst'):
+        expected.setdefault(name, Decimal(0))
+    differences = {}
+    for name in rounding:
+        item = check['checks'].get(name)
+        if not item or item.get('actual') is None:
+            return
+        if Decimal(str(item['actual'])) != expected[name]:
+            return
+        if not item.get('ok'):
+            differences[name] = str(Decimal(str(item['actual']))-Decimal(str(item['expected'])))
+    if complete_line_taxes and zoho_line_heads:
+        sums = {}
+        for tax_id, rate, head, actual, base in zoho_line_heads:
+            if abs(actual-cents(base*rate/100/factor)) > Decimal('.01'):
+                return
+            sums[(tax_id, rate, head)] = sums.get((tax_id, rate, head), Decimal(0))+actual
+        for (tax_id, rate, head), total in sums.items():
+            if total != cents(groups[(tax_id, rate)][0]*rate/100/factor):
+                return
+    elif line_errors & set(check['errors']):
+        return
+    check['errors'] = [e for e in check['errors'] if not is_rounding(e)]
+    check['zoho_rounding_policy'] = {'policy': 'owner-proven-zoho-group-tax-rounding-2026-11-13',
+                                     'printed_head': str(printed[heads[0]]), 'zoho_group_head': str(group_head),
+                                     'accepted_differences': differences}
 
 
 class Engine:
@@ -1663,7 +1726,7 @@ class Engine:
     def retry(self, doc_id):
         with self.state_lock:
             job = self.read(doc_id)
-            if not job or not (job['status'] == 'retryable' or source_recheck_allowed(job)):
+            if not job or not (job['status'] == 'retryable' or source_recheck_allowed(job) or readback_recheck_allowed(job)):
                 raise Hold('This invoice has no safe retry available.')
             self.save(job, 'queued', retry_count=job.get('retry_count', 0)+1,
                       retry_attempts=0, retry_at=0, message='Retry requested. Retained source readings will be reused.')
@@ -1920,6 +1983,14 @@ def source_recheck_allowed(job):
             and not job.get('bill_id') and not job.get('payload_sha256'))
 
 
+def readback_recheck_allowed(job):
+    # A created bill held only by its read-back is read again and re-verified on retry.
+    # The job keeps its bill ID, so processing can only look the bill up, never create one.
+    return (job.get('status') == 'needs_review' and str(job.get('bill_id', '')).isdigit()
+            and str(job.get('message', '')).startswith('Zoho read-back differs:')
+            and isinstance(job.get('parsed'), dict) and isinstance(job.get('source_check'), dict))
+
+
 def render_status(doc_id, filename, job, csrf=''):
     esc = lambda s: html.escape(str(s), quote=True)
     job = job or {'status': 'not_started', 'message': 'This original has not been submitted for automatic processing.'}
@@ -1928,7 +1999,7 @@ def render_status(doc_id, filename, job, csrf=''):
         org = os.environ.get('ZOHO_ORGANIZATION_ID', '')
         root = 'https://books.zoho.in/app/'+org if org.isdigit() else 'https://books.zoho.in/app'
         link = '<p><a href="'+root+'#/bills/'+esc(job['bill_id'])+'" target="_blank" rel="noopener">Open Zoho bill ↗</a></p>'
-    if (job['status'] == 'retryable' or source_recheck_allowed(job)) and csrf:
+    if (job['status'] == 'retryable' or source_recheck_allowed(job) or readback_recheck_allowed(job)) and csrf:
         link += '<form method="post" action="/api/retry/'+esc(doc_id)+'"><input type="hidden" name="csrf" value="'+esc(csrf)+'"><button type="submit">Retry processing</button><p>Completed readings are reused. A missing reading uses the remaining approved AI budget. An uncertain create is only looked up.</p></form>'
     if source_recheck_allowed(job) and csrf:
         link += '<form method="post" action="/api/reread/'+esc(doc_id)+'"><input type="hidden" name="csrf" value="'+esc(csrf)+'"><button type="submit">Re-read with fresh AI readings</button><p>Reads the original twice again (about USD 0.05 of the AI budget), then runs every check. Nothing has reached Zoho for this invoice.</p></form>'

@@ -18,7 +18,8 @@ class TotalTransportRounding(unittest.TestCase):
         # Two 9% lines whose printed per-line taxes sum one paisa below Zoho's group rounding.
         value = invoice()
         value.update(vendor_name='SYNTHETIC FREIGHT VENDOR', vendor_gstin=gstin)
-        value['line_items'] = [dict(value['line_items'][0], description='Charge '+str(i), rate='100.05')
+        value['line_items'] = [dict(value['line_items'][0], description='Charge '+str(i), rate='100.05',
+                                    cgst='9.00', sgst='9.00', igst=None)
                                for i in (1, 2)]
         value.update(subtotal='200.10', tax_amount_cgst='18.00', tax_amount_sgst='18.00', invoice_total='236.10')
         return value
@@ -55,10 +56,18 @@ class TotalTransportRounding(unittest.TestCase):
         self.assertFalse(result['ok'])
         self.assertNotIn('vendor_rounding_policy', result)
 
-    def test_other_suppliers_keep_exact_readback(self):
+    def test_other_suppliers_get_only_proven_group_rounding(self):
+        # Owner rule 13 Nov 2026: exact Zoho group rounding is proven for any supplier,
+        # but the INR 1 allowance stays Total Transport's alone.
         result = self.check(OTHER_GSTIN)
-        self.assertFalse(result['ok'])
+        self.assertTrue(result['ok'], result['errors'])
         self.assertNotIn('vendor_rounding_policy', result)
+        self.assertIn('zoho_rounding_policy', result)
+        for bill in ({'head': '18.51', 'line': ('9.51', '9.00')}, {'head': '18.02', 'line': ('9.01', '9.01')}):
+            with self.subTest(bill):
+                result = self.check(OTHER_GSTIN, **bill)
+                self.assertFalse(result['ok'])
+                self.assertNotIn('zoho_rounding_policy', result)
 
     def test_taxable_subtotal_is_never_relaxed(self):
         result = self.check(TOTAL_GSTIN, subtotal='200.11', total='236.13')

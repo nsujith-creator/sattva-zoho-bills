@@ -1087,15 +1087,33 @@ def reverse_charge_note_only(reading):
     return all(normal(note) for note in issues)
 
 
-def single_invoice(reading):
+def single_invoice(reading, text=None):
     """True when a reading says the PDF holds exactly one invoice. Haiku sometimes leaves the
-    count key out entirely; a high-confidence reading with no stopping issues already asserts a
-    single invoice (the prompt makes multiple invoices low confidence), so an ABSENT key counts
-    as one there. An explicit null, zero or larger count still holds."""
+    count key out entirely. An ABSENT key counts as one only on a high-confidence reading with
+    no stopping issues AND when the PDF text itself shows one invoice: every invoice-number label
+    carries this bill number, at most one Total and one Amount due row, no credit/debit note.
+    An explicit null, zero or larger count always holds."""
     if reading.get('multi_invoice_count') == 1:
         return True
-    return ('multi_invoice_count' not in reading and reading.get('confidence') == 'high'
-            and reverse_charge_note_only(reading))
+    if ('multi_invoice_count' in reading or reading.get('confidence') != 'high'
+            or not reverse_charge_note_only(reading) or not isinstance(text, str)):
+        return False
+    return pdf_shows_one_invoice(reading.get('bill_number'), text)
+
+
+def pdf_shows_one_invoice(bill_number, text):
+    compact = lambda value: re.sub(r'[^A-Z0-9]', '', str(value or '').upper())
+    number = compact(bill_number)
+    if len(number) < 4 or re.search(r'\b(?:credit|debit)\s+note\b', text, re.I):
+        return False
+    labelled = re.findall(r'\b(?:invoice|bill)\s*(?:number|no\.?|#)\s*[:.]?\s*([A-Z0-9][A-Z0-9 /-]*?)(?:\s{2,}|$)',
+                          text, re.I | re.M)
+    if not labelled or any(compact(value) != number for value in labelled):
+        return False
+    rows = text.splitlines()
+    totals = sum(bool(re.match(r'\s*(?:grand\s+|invoice\s+)?total\b', row, re.I)) for row in rows)
+    due = sum(bool(re.match(r'\s*(?:amount|balance)\s+due\b', row, re.I)) for row in rows)
+    return totals <= 1 and due <= 1 and totals + due >= 1
 
 
 def reconcile_readings(first, second, text, core):
@@ -1104,7 +1122,7 @@ def reconcile_readings(first, second, text, core):
     derived, corrections, sources = [], [], []
     for label, raw in (('first', first), ('second', second)):
         if (not isinstance(raw, dict) or raw.get('confidence') != 'high'
-                or not reverse_charge_note_only(raw) or not single_invoice(raw)):
+                or not reverse_charge_note_only(raw) or not single_invoice(raw, text)):
             raise Hold('The two source readings disagree or are incomplete; no bill posted.')
         if (not isinstance(raw.get('line_items'), list) or not 0 < len(raw['line_items']) <= 100
                 or any(not isinstance(line, dict) for line in raw['line_items'])):
@@ -1113,7 +1131,7 @@ def reconcile_readings(first, second, text, core):
         if 'multi_invoice_count' not in parsed:
             parsed['multi_invoice_count'] = 1
             corrections.append({'reading': label, 'field': 'multi_invoice_count', 'raw': None, 'printed': 1,
-                                'reason': 'count omitted by a high-confidence reading with no stopping issues'})
+                                'reason': 'count omitted; PDF text shows one invoice number and one total'})
         if core.is_cma_cgm_invoice(parsed.get('vendor_name'), text):
             consumed_rows = set()
             for index, line in enumerate(parsed.get('line_items', [])):
@@ -1929,7 +1947,8 @@ def render_status(doc_id, filename, job, csrf=''):
     for label, key in (('First reading', 'parsed'), ('Second reading', 'source_check')):
         reading = job.get(key)
         if isinstance(reading, dict) and (reading.get('confidence') != 'high' or not reverse_charge_note_only(reading)
-                                          or not single_invoice(reading)):
+                                          or (reading.get('multi_invoice_count') != 1
+                                              and not ('multi_invoice_count' not in reading and job.get('reconciled_parsed')))):
             issues = reading.get('issues')
             issues = '; '.join(map(str, issues)) if isinstance(issues, list) else str(issues or 'none listed')
             rows += ('<tr><th>'+esc(label)+' flagged</th><td>confidence '+esc(reading.get('confidence'))

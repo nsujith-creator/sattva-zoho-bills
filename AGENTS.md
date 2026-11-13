@@ -56,3 +56,7 @@ For NEW cloud uploads from overseas service suppliers (for example Anthropic, Op
 ### Owner-approved expense account routing, 12 November 2026
 
 New cloud bills route each line to a Zoho account by the matched Zoho vendor, never by AI choice: Anthropic, OpenAI, Railway, Cloudflare and ShipsGo to Software Subscription Charger (914109000000994119); Sendinblue/Brevo to Advertising And Marketing (914109000000000501); Google India by printed service code (998319/998315 to Software Subscription Charger, 99836x to Advertising And Marketing); the bank-charges line on bank-debit bookings to Bank Fees and Charges (914109000000000507); every other line stays on COGS (914109000000000567). Existing bills are not edited. Duplicate verification compares source facts, not this booking choice.
+
+### Owner-approved printed credits on bank-debit bookings, 13 November 2026
+
+For NEW foreign-currency overseas invoices booked from bank debits only, a credit printed as a deduction (for example Railway's "Hobby plan monthly included usage ($5.00 off)") is accepted when no tax is printed and subtotal minus credit equals the printed total. Each charged line is reduced in proportion so the lines sum exactly to the bank payment debit; zero-amount printed lines are left out; the original charges, the credit and the amount paid are written in the bill notes. Credits on INR invoices, credits not printed as a deduction, or arithmetic that does not match still hold.

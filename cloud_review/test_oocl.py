@@ -158,5 +158,40 @@ class OOCL(unittest.TestCase):
         self.assertFalse(a.is_oocl_layout('Orient Overseas Container Line Limited\nNo GST table\n'))
 
 
+class LiveReadingShapes(unittest.TestCase):
+    """Shapes seen in live readings of OOCL invoices, replayed on the synthetic layout."""
+    def test_per_head_rate_and_agent_overseas_flag_reconcile(self):
+        parsed, text = fixture()
+        first, second = copy.deepcopy(parsed), copy.deepcopy(parsed)
+        for line in first['line_items']:
+            line['tax_percentage'] = '9'   # Per-head CGST/SGST rate, not the 18% total.
+        second['is_overseas'] = True       # "Issued as agent for the overseas carrier".
+        result, evidence = a.reconcile_readings(first, second, text, core_fixture())
+        self.assertEqual(['18', '18'], [line['tax_percentage'] for line in result['line_items']])
+        self.assertIs(result['is_overseas'], False)
+        fields = [c['field'] for c in evidence['corrections']]
+        self.assertEqual(2, fields.count('tax_percentage'))
+        self.assertIn('is_overseas', fields)
+        self.assertEqual('9', first['line_items'][0]['tax_percentage'])  # Raw readings unchanged.
+
+    def test_rate_that_does_not_match_the_head_amount_still_holds(self):
+        parsed, text = fixture()
+        for rate in ('12', '6', '4.5'):
+            first = copy.deepcopy(parsed)
+            first['line_items'][0]['tax_percentage'] = rate
+            with self.subTest(rate=rate), self.assertRaises(a.Hold):
+                a.reconcile_readings(first, copy.deepcopy(parsed), text, core_fixture())
+
+    def test_doubled_rate_must_match_the_printed_gst_detail(self):
+        # Printed 2.5% + 2.5% with head amounts that are 9% of the line: doubling to 18 fails proof.
+        parsed, text = fixture()
+        text = text.replace(row((3, 'SYNTHETIC HANDLING'), (29, '1,000.00'), (43, '9%')),
+                            row((3, 'SYNTHETIC HANDLING'), (29, '1,000.00'), (43, '2.5%')))
+        first = copy.deepcopy(parsed)
+        first['line_items'][0]['tax_percentage'] = '9'
+        with self.assertRaises(a.Hold):
+            a.reconcile_readings(first, copy.deepcopy(parsed), text, core_fixture())
+
+
 if __name__ == '__main__':
     unittest.main()

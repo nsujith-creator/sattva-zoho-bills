@@ -23,6 +23,8 @@ from pathlib import Path
 MODEL = 'claude-haiku-4-5'
 OWNER_GSTIN = '27AEFPN9399L1ZI'
 OIDAR = r'99\d{2}[A-Z]{3}\d{5}OS[A-Z0-9]'  # India OIDAR registration of an overseas supplier.
+INDIAN_GSTIN = r'(?:0[1-9]|[1-3]\d)[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]'  # Regular Indian registration.
+HEAD_TOTAL_RATES = {Decimal(x) for x in ('3', '5', '12', '18', '28', '40')}
 POLICY = 'owner-cloud-automatic-posting-2026-10-28'
 MAX_OUTPUT = 6000
 MAX_INPUT = 40000
@@ -1085,18 +1087,51 @@ def reverse_charge_note_only(reading):
     return all(normal(note) for note in issues)
 
 
+def single_invoice(reading, text=None):
+    """True when a reading says the PDF holds exactly one invoice. Haiku sometimes leaves the
+    count key out entirely. An ABSENT key counts as one only on a high-confidence reading with
+    no stopping issues AND when the PDF text itself shows one invoice: every invoice-number label
+    carries this bill number, at most one Total and one Amount due row, no credit/debit note.
+    An explicit null, zero or larger count always holds."""
+    if reading.get('multi_invoice_count') == 1:
+        return True
+    if ('multi_invoice_count' in reading or reading.get('confidence') != 'high'
+            or not reverse_charge_note_only(reading) or not isinstance(text, str)):
+        return False
+    return pdf_shows_one_invoice(reading.get('bill_number'), text)
+
+
+def pdf_shows_one_invoice(bill_number, text):
+    compact = lambda value: re.sub(r'[^A-Z0-9]', '', str(value or '').upper())
+    number = compact(bill_number)
+    if len(number) < 4 or re.search(r'\b(?:credit|debit)\s+note\b', text, re.I):
+        return False
+    labelled = re.findall(r'\b(?:invoice|bill)\s*(?:number|no\.?|#)\s*[:.]?\s*([A-Z0-9][A-Z0-9 /-]*?)(?:\s{2,}|$)',
+                          text, re.I | re.M)
+    if not labelled or any(compact(value) != number for value in labelled):
+        return False
+    rows = text.splitlines()
+    totals = sum(bool(re.match(r'\s*(?:grand\s+|invoice\s+)?total\b', row, re.I)) for row in rows)
+    due = sum(bool(re.match(r'\s*(?:amount|balance)\s+due\b', row, re.I)) for row in rows)
+    return totals <= 1 and due <= 1 and totals + due >= 1
+
+
 def reconcile_readings(first, second, text, core):
     # Raw provider results remain immutable. Only printed CMA tax rows may replace
     # charge-tax fields in these separate derived copies.
     derived, corrections, sources = [], [], []
     for label, raw in (('first', first), ('second', second)):
         if (not isinstance(raw, dict) or raw.get('confidence') != 'high'
-                or not reverse_charge_note_only(raw) or raw.get('multi_invoice_count') != 1):
+                or not reverse_charge_note_only(raw) or not single_invoice(raw, text)):
             raise Hold('The two source readings disagree or are incomplete; no bill posted.')
         if (not isinstance(raw.get('line_items'), list) or not 0 < len(raw['line_items']) <= 100
                 or any(not isinstance(line, dict) for line in raw['line_items'])):
             raise Hold('Each source reading requires a nonempty supported charge list.')
         parsed = copy.deepcopy(raw)
+        if 'multi_invoice_count' not in parsed:
+            parsed['multi_invoice_count'] = 1
+            corrections.append({'reading': label, 'field': 'multi_invoice_count', 'raw': None, 'printed': 1,
+                                'reason': 'count omitted; PDF text shows one invoice number and one total'})
         if core.is_cma_cgm_invoice(parsed.get('vendor_name'), text):
             consumed_rows = set()
             for index, line in enumerate(parsed.get('line_items', [])):
@@ -1109,7 +1144,33 @@ def reconcile_readings(first, second, text, core):
                                             'raw': line.get(head), 'printed': proof['amount'],
                                             'row_sha256': proof['row_sha256']})
                     line[head] = proof['amount']
+        # A reading that gave the per-head rate (OOCL prints CGST 9% and SGST 9% in separate
+        # columns) is recognised only when each printed head amount equals line x that rate,
+        # which cannot hold for the total; the doubled total must still pass the printed checks.
+        for index, line in enumerate(parsed['line_items']):
+            try:
+                base, head = amount(line.get('rate')), Decimal(str(line.get('tax_percentage')))
+                cgst, sgst = (amount(line[k]) if line.get(k) is not None else None for k in ('cgst', 'sgst'))
+                igst = amount(line['igst']) if line.get('igst') is not None else Decimal(0)
+            except (Hold, InvalidOperation, ValueError, TypeError):
+                continue
+            if (base > 0 and cgst is not None and cgst > 0 and cgst == sgst and not igst
+                    and head*2 in HEAD_TOTAL_RATES
+                    and (base*head/100).quantize(Decimal('.01'), rounding=ROUND_HALF_UP) == cgst):
+                corrections.append({'reading': label, 'line': index, 'field': 'tax_percentage',
+                                    'raw': line.get('tax_percentage'), 'printed': str(head*2), 'reason': 'per-head CGST/SGST rate'})
+                line['tax_percentage'] = str((head*2).normalize())
         sources.append(corroborate_source(parsed, text, core))
+        # After printed proof: a regular Indian GSTIN charging Indian GST is a domestic supplier,
+        # whatever "agent for the overseas carrier" wording a reading saw.
+        try:
+            charged = any(amount(parsed.get(k)) for k in ('tax_amount_cgst', 'tax_amount_sgst', 'tax_amount_igst'))
+        except Hold:
+            charged = False
+        if (charged and re.fullmatch(INDIAN_GSTIN, str(parsed.get('vendor_gstin') or '').upper())
+                and parsed.get('is_overseas') is not False):
+            corrections.append({'reading': label, 'field': 'is_overseas', 'raw': parsed.get('is_overseas'), 'printed': 'Indian GSTIN charging GST'})
+            parsed['is_overseas'] = False
         # After printed proof only: an OIDAR registration on the PDF is an overseas supplier,
         # and units (e.g. 40000 emails) in quantity do not change a printed line total.
         if re.fullmatch(OIDAR, str(parsed.get('vendor_gstin') or '').upper()) and parsed.get('is_overseas') is not True:
@@ -1886,7 +1947,8 @@ def render_status(doc_id, filename, job, csrf=''):
     for label, key in (('First reading', 'parsed'), ('Second reading', 'source_check')):
         reading = job.get(key)
         if isinstance(reading, dict) and (reading.get('confidence') != 'high' or not reverse_charge_note_only(reading)
-                                          or reading.get('multi_invoice_count') != 1):
+                                          or (reading.get('multi_invoice_count') != 1
+                                              and not ('multi_invoice_count' not in reading and job.get('reconciled_parsed')))):
             issues = reading.get('issues')
             issues = '; '.join(map(str, issues)) if isinstance(issues, list) else str(issues or 'none listed')
             rows += ('<tr><th>'+esc(label)+' flagged</th><td>confidence '+esc(reading.get('confidence'))

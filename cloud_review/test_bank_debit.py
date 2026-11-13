@@ -288,3 +288,45 @@ class PrintedCreditReviewFindings(PrintedCredit):
         second['line_items'].append(dict(zero, description='Unused storage'))
         parsed, evidence = a.reconcile_readings(first, second, text, self.core)
         self.assertEqual(1, len(parsed['line_items']))
+
+
+class OmittedInvoiceCount(unittest.TestCase):
+    """Live Haiku readings sometimes leave multi_invoice_count out entirely."""
+    @classmethod
+    def setUpClass(cls):
+        cls.core = core_fixture()
+
+    def reading(self, **changes):
+        value = overseas_invoice(); value.pop('multi_invoice_count'); value.update(changes)
+        return value
+
+    def test_clean_reading_without_the_count_is_one_invoice(self):
+        parsed, evidence = a.reconcile_readings(self.reading(), self.reading(), overseas_text(), self.core)
+        self.assertEqual(1, parsed['multi_invoice_count'])
+        self.assertIn('multi_invoice_count', {c['field'] for c in evidence['corrections']})
+        with self.assertRaises(a.NeedsBankAmounts):
+            a.validate(parsed, self.core, {VENDOR: {'id': '7', 'gst_no': OIDAR}})
+
+    def test_explicit_or_doubtful_counts_still_hold(self):
+        for first in (self.reading(multi_invoice_count=None), self.reading(multi_invoice_count=2),
+                      self.reading(multi_invoice_count=0), self.reading(confidence='medium'),
+                      self.reading(issues=['Unclear digit in total'])):
+            with self.subTest(first=first.get('multi_invoice_count'), confidence=first['confidence']):
+                with self.assertRaises(a.Hold):
+                    a.reconcile_readings(first, self.reading(), overseas_text(), self.core)
+
+    def test_omitted_count_needs_the_pdf_to_show_one_invoice(self):
+        second_invoice = overseas_text() + '\n'.join([
+            '', 'Invoice', 'Invoice number        SYNCLOUD-0002',
+            '                                     Total                                           $10.00',
+            '                                     Amount due                                  $10.00 USD', ''])
+        unlabelled_second = overseas_text() + '\n'.join([
+            '', 'Statement page', '                                     Total                                           $3.00', ''])
+        credit_note = overseas_text().replace('Tax Invoice', 'Credit Note')
+        for name, text in (('second invoice', second_invoice), ('unlabelled second total', unlabelled_second),
+                           ('credit note', credit_note)):
+            with self.subTest(name), self.assertRaises(a.Hold):
+                a.reconcile_readings(self.reading(), self.reading(), text, self.core)
+        # An explicit count of one is still taken from the reading, as before.
+        a.reconcile_readings(overseas_invoice(), overseas_invoice(), overseas_text(), self.core)
+

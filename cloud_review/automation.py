@@ -666,7 +666,8 @@ def corroborate_source(parsed, text, core):
         matches = []
         for match in printed:
             begin = text.rfind('\n', 0, match.start())+1
-            values = re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', text[match.start():row_end(text, match.start())])
+            window_start = text.rfind('\n', 0, begin - 1) + 1 if begin > 0 else 0
+            values = re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', text[window_start:row_end(text, match.start())])
             if begin not in consumed_rows and values and Decimal(values[-1].replace(',', '')) == amount(line['rate']):
                 matches = [match]; consumed_rows.add(begin); break
         if not matches:
@@ -675,11 +676,12 @@ def corroborate_source(parsed, text, core):
         charge_windows = []
         for match in matches:
             begin = text.rfind('\n', 0, match.start())+1
+            window_start = text.rfind('\n', 0, begin - 1) + 1 if begin > 0 else 0
             end = row_end(text, match.start())
             charge_row = text[begin:end]
-            values = re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', text[match.start():end])
+            values = re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', text[window_start:end])
             if values:
-                bases.append(Decimal(values[-1].replace(',', '')))
+            bases.append(Decimal(values[-1].replace(',', '')))
             boundary = next((pos for pos in charge_starts if pos > begin), min(len(text), begin+2000))
             window = text[begin:boundary]
             charge_windows.append(window)

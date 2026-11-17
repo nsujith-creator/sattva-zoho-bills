@@ -681,9 +681,8 @@ def corroborate_source(parsed, text, core):
             charge_row = text[begin:end]
             values = re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', text[window_start:end])
             if values:
-            bases.append(Decimal(values[-1].replace(',', '')))
+                bases.append(Decimal(values[-1].replace(',', '')))
             boundary = next((pos for pos in charge_starts if pos > begin), min(len(text), begin+2000))
-            window = text[begin:boundary]
             charge_windows.append(window)
             for head, value in re.findall(r'(CGST|SGST|IGST|Central\s+GST|State\s+GST|Integrated\s+GST)(?:\s*@?\s*|\d+(?:\.\d+)?\s*\(\s*|\s*\(\s*)(\d+(?:\.\d+)?)\s*%', window, re.I):
                 head = {'C': 'CGST', 'S': 'SGST', 'I': 'IGST'}[head[0].upper()]

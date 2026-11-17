@@ -206,24 +206,23 @@ def corroborate_total_transport(parsed, text):
         regs = re.findall(r'\bGST Code\s*:\s*([A-Z0-9]{15})\b', header[0], re.I)
         panel = header[1].split('Shipper', 1)[0]
         buyer = re.findall(r'\bGST No\.\s*:\s*([A-Z0-9]{15})\b', panel, re.I)
-        ids = re.findall(r'\bInvoice No\.\s*:?\s*([A-Z0-9/-]+)\b', page, re.I)
-        # Printed date and MBL values may wrap below the label in the right column.
+        ids = re.findall(r'\bInvoice No\.\s*:\s*([A-Z0-9/-]+)\b', page, re.I)
         date_rows = page.splitlines()
         invoice_dates, deadlines, bls = [], [], []
         for index, row in enumerate(date_rows):
             label = re.search(r'\bInvoice Date\b', row)
             if label:
-                window = ' '.join(value[max(0, label.start()-2):] for value in date_rows[index:index+3])
-                invoice_dates += re.findall(r'(\d{2}/[A-Za-z]{3}/\d{4})\b', window)
+                window = ' '.join(value[label.start():] for value in date_rows[index:index+3])
+                invoice_dates += re.findall(r'(?::\s*)?(\d{2}/[A-Za-z]{3}/\d{4})\b', window)
             due_label = re.search(r'\bInvoice Due Date\b', row)
             if due_label:
-                window = ' '.join(value[max(0, due_label.start()-2):] for value in date_rows[index:index+3])
-                deadlines += re.findall(r'(\d{2}/[A-Za-z]{3}/\d{4})\b', window)
-            bl_label = re.search(r'\bMBL\s*/\s*MAWB\b', row)
-            if bl_label:
-                window = ' '.join(value[max(0, bl_label.start()-2):] for value in date_rows[index:index+3])
-                bls += re.findall(r'([A-Z0-9-]{6,})\s*/\s*\d{2}/[A-Za-z]{3}/\d{4}', window)
-        if any(len(set(values)) != 1 for values in (regs, buyer, ids, invoice_dates, deadlines)) or len(set(bls)) > 1:
+                window = ' '.join(value[due_label.start():] for value in date_rows[index:index+3])
+                deadlines += re.findall(r'(?::\s*)?(\d{2}/[A-Za-z]{3}/\d{4})\b', window)
+            mbl_label = re.search(r'\bMBL\s*/\s*MAWB\b', row)
+            if mbl_label:
+                window = ' '.join(value[mbl_label.start():] for value in date_rows[index:index+3])
+                bls += re.findall(r'[\s:]+([A-Z0-9-]+)\s*/\s*\d{2}/[A-Za-z]{3}/\d{4}', window)
+        if any(len(values) != 1 for values in (regs, buyer, ids, invoice_dates, deadlines)) or len(bls) > 1:
             raise fail()
         suppliers.update(regs); buyers.update(buyer); numbers.update(ids)
         dates.update(invoice_dates); dues.update(deadlines); references.update(bls)
@@ -244,84 +243,65 @@ def corroborate_total_transport(parsed, text):
     labelled_currencies = re.findall(r'\b(?:invoice|payable)\s+currency\s*:\s*([A-Z]{3})\b', text, re.I)
     if any(value.upper() != 'INR' for value in labelled_currencies):
         raise fail()
-    # Reject source credits/adjustments instead of discarding them during table reading.
     if re.search(r'\b(?:credit\s+(?:note|memo)|discount|round[ -]*off|adjustment)\b', text, re.I):
         raise fail()
-    headers = [(i, list(re.finditer(r'Particulars|HSN/SAC|Curr|Qty|Rate|ROE|Taxable|CGS(?:T)?|SGS(?:T)?|Total', row)))
+    headers = [(i, list(re.finditer(r'Particulars|HSN/SAC|Curr|Qty|Rate|ROE|Taxable|CGS(?:T|\b)|SGST?|Total', row)))
                for i, row in enumerate(rows) if 'Particulars' in row and 'HSN/SAC' in row]
     if len(headers) != 1:
         raise fail()
     index, labels = headers[0]
-    if [m[0] for m in labels] not in (
-        ['Particulars', 'HSN/SAC', 'Curr', 'Qty', 'Rate', 'ROE', 'Taxable', 'CGST', 'CGST', 'SGST', 'SGST', 'Total'],
-        ['Particulars', 'HSN/SAC', 'Curr', 'Qty', 'Rate', 'ROE', 'Taxable', 'CGS', 'CGST', 'SGS', 'SGST', 'Total'],
-    ):
+    normalized_labels = ['CGST' if m[0] == 'CGS' else 'SGST' if m[0] == 'SGS' else m[0] for m in labels]
+    if normalized_labels != ['Particulars', 'HSN/SAC', 'Curr', 'Qty', 'Rate', 'ROE',
+                             'Taxable', 'CGST', 'CGST', 'SGST', 'SGST', 'Total']:
         raise fail()
-    centers = [(m.start()+m.end())/2 for m in labels]
-    # Description is left aligned; every numeric column is centred under its header.
+    if '(INR)' not in rows[index+1] or not re.search(r'Value\s+T?%\s+Amt\s+T?%\s+Amt', rows[index+1]):
+        raise fail()
     end = next((i for i in range(index+2, len(rows)) if re.match(r'^\s*Amount In Words\s*:', rows[i])), None)
     if end is None:
         raise fail()
-    table_rows = rows[index+2:end]
-    boundaries = [0, labels[1].start()]
-    for left, right in zip(centers[1:-1], centers[2:]):
-        nominal = int((left+right)/2+.5)
-        candidates = sorted(range(nominal-3, nominal+4), key=lambda value:(abs(value-nominal), value))
-        # Wrapped figures may extend one character beyond a centred heading.
-        # A boundary must not cut any printed token on any table row.
-        boundary = next((value for value in candidates if all(
-            len(row) <= value or row[value-1].isspace() or row[value].isspace() for row in table_rows)), None)
-        if boundary is None or boundary <= boundaries[-1]:
+    def is_numeric_tail(tokens):
+        return (len(tokens) >= 11
+                and re.fullmatch(r'\d{4,8}', tokens[-11])
+                and tokens[-10] in ('INR', 'USD', 'EUR')
+                and all(re.fullmatch(r'\d[\d,]*\.\d+', tokens[k]) for k in range(-9, 0)))
+    blocks, current = [], []
+    for row in rows[index+2:end]:
+        if not row.strip():
+            if current:
+                blocks.append(current)
+                current = []
+        else:
+            current.append(row)
+    if current:
+        blocks.append(current)
+    printed, total = [], None
+    for block in blocks:
+        if total is not None:
             raise fail()
-        boundaries.append(boundary)
-    boundaries.append(None)
-    if '(INR)' not in rows[index+1] or not re.search(r'Value\s+%\s+Amt\s+%\s+Amt', rows[index+1]):
-        raise fail()
-    cells, printed = ['']*12, []
-    total = None
-    def finish():
-        if not any(cells):
-            return None
-        description = ' '.join(cells[0].split())
-        numeric = [value.replace(' ', '') for value in cells[1:]]
-        if description.upper() == 'TOTAL':
-            if any(numeric[i] for i in (0, 1, 2, 3, 4, 6, 8)):
+        first_tokens = block[0].split()
+        if len(block) == 1 and len(first_tokens) == 5 and first_tokens[0].upper() == 'TOTAL':
+            if any(not re.fullmatch(r'\d[\d,]*\.\d+', t) for t in first_tokens[1:]):
                 raise fail()
-            return ('total', [amount(numeric[i].replace(',', '')) for i in (5, 7, 9, 10)])
-        if not description or not re.fullmatch(r'\d{4,8}', numeric[0]) or numeric[1] not in ('INR', 'USD', 'EUR'):
-            raise fail()
-        if any(not re.fullmatch(r'\d[\d,]*\.\d+', numeric[i]) for i in range(2, 11)):
+            total = [amount(t.replace(',', '')) for t in first_tokens[1:]]
+            continue
+        desc_words, numeric = [], None
+        for line in block:
+            toks = line.split()
+            if is_numeric_tail(toks):
+                if numeric is not None:
+                    raise fail()
+                desc_words.extend(toks[:-11])
+                numeric = toks[-11:]
+            else:
+                desc_words.extend(toks)
+        if not desc_words or numeric is None:
             raise fail()
         base, cgst, sgst, gross = [amount(numeric[i].replace(',', '')) for i in (5, 7, 9, 10)]
         if base+cgst+sgst != gross or numeric[6] != numeric[8]:
             raise fail()
-        return ('line', {'description':normalize(description), 'hsn_or_sac':numeric[0],
-                         'rate':base, 'tax_percentage':Decimal(numeric[6])+Decimal(numeric[8]),
-                         'cgst':cgst, 'sgst':sgst})
-    for row in rows[index+2:]:
-        if re.match(r'^\s*Amount In Words\s*:', row):
-            item = finish()
-            if item and item[0] == 'total' and total is None:
-                total = item[1]
-            elif item or total is None:
-                raise fail()
-            break
-        if not row.strip():
-            item = finish()
-            if item:
-                if item[0] == 'total' and total is None:
-                    total = item[1]
-                elif item[0] == 'line' and total is None:
-                    printed.append(item[1])
-                else:
-                    raise fail()
-                cells = ['']*12
-            continue
-        if total is not None:
-            raise fail()
-        parts = [row[left:right].strip() for left, right in zip(boundaries, boundaries[1:])]
-        for i, value in enumerate(parts):
-            cells[i] += (' ' if i == 0 and cells[i] and value else '')+value
+        printed.append({'description': normalize(' '.join(desc_words)), 'hsn_or_sac': numeric[0],
+                        'rate': base, 'tax_percentage': Decimal(numeric[6])+Decimal(numeric[8]),
+                        'cgst': cgst, 'sgst': sgst})
     extracted = parsed.get('line_items')
     if not total or not isinstance(extracted, list) or len(extracted) != len(printed) or not printed:
         raise fail()
@@ -348,7 +328,7 @@ def corroborate_total_transport(parsed, text):
         for row in rows[summary_headers[0]+1:]:
             if not row.strip():
                 continue
-            if re.match(r'^\s*This is a computer generated', row):
+            if re.match(r'^\s*(?:Remarks|Bank Details|This is a computer generated)\b', row, re.I):
                 break
             values = row.split()
             if len(values) != 7 or not re.fullmatch(r'\d{4,8}', values[0]):

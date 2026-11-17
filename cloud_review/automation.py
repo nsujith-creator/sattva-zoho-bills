@@ -683,11 +683,12 @@ def corroborate_source(parsed, text, core):
             if values:
                 bases.append(Decimal(values[-1].replace(',', '')))
             boundary = next((pos for pos in charge_starts if pos > begin), min(len(text), begin+2000))
+            window = text[window_start:boundary]
             charge_windows.append(window)
             for head, value in re.findall(r'(CGST|SGST|IGST|Central\s+GST|State\s+GST|Integrated\s+GST)(?:\s*@?\s*|\d+(?:\.\d+)?\s*\(\s*|\s*\(\s*)(\d+(?:\.\d+)?)\s*%', window, re.I):
                 head = {'C': 'CGST', 'S': 'SGST', 'I': 'IGST'}[head[0].upper()]
                 heads[head].add(Decimal(value))
-            percentages.update(Decimal(x) for x in re.findall(r'(\d+(?:\.\d+)?)\s*%', text[begin:end]))
+            percentages.update(Decimal(x) for x in re.findall(r'(\d+(?:\.\d+)?)\s*%', text[window_start:end]))
         if core.is_cma_cgm_invoice(parsed.get('vendor_name'), text):
             # CMA tax-summary labels abbreviate the charge names. Bind the printed
             # GST rows by their taxable amount and printed SAC instead of guessing aliases.

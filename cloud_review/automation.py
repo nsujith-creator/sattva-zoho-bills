@@ -206,18 +206,24 @@ def corroborate_total_transport(parsed, text):
         regs = re.findall(r'\bGST Code\s*:\s*([A-Z0-9]{15})\b', header[0], re.I)
         panel = header[1].split('Shipper', 1)[0]
         buyer = re.findall(r'\bGST No\.\s*:\s*([A-Z0-9]{15})\b', panel, re.I)
-        ids = re.findall(r'\bInvoice No\.\s*:\s*([A-Z0-9/-]+)\b', page, re.I)
-        # The printed date value may wrap below the label in the right column.
+        ids = re.findall(r'\bInvoice No\.\s*:?\s*([A-Z0-9/-]+)\b', page, re.I)
+        # Printed date and MBL values may wrap below the label in the right column.
         date_rows = page.splitlines()
-        invoice_dates = []
+        invoice_dates, deadlines, bls = [], [], []
         for index, row in enumerate(date_rows):
             label = re.search(r'\bInvoice Date\b', row)
             if label:
-                window = ' '.join(value[label.start():] for value in date_rows[index:index+3])
-                invoice_dates += re.findall(r':\s*(\d{2}/[A-Za-z]{3}/\d{4})\b', window)
-        deadlines = re.findall(r'\bInvoice Due Date\s*:\s*(\d{2}/[A-Za-z]{3}/\d{4})\b', page)
-        bls = re.findall(r'\bMBL / MAWB\s*:\s*([A-Z0-9/-]+)\s*/\s*\d{2}/[A-Za-z]{3}/\d{4}', page)
-        if any(len(values) != 1 for values in (regs, buyer, ids, invoice_dates, deadlines)) or len(bls) > 1:
+                window = ' '.join(value[max(0, label.start()-2):] for value in date_rows[index:index+3])
+                invoice_dates += re.findall(r'(\d{2}/[A-Za-z]{3}/\d{4})\b', window)
+            due_label = re.search(r'\bInvoice Due Date\b', row)
+            if due_label:
+                window = ' '.join(value[max(0, due_label.start()-2):] for value in date_rows[index:index+3])
+                deadlines += re.findall(r'(\d{2}/[A-Za-z]{3}/\d{4})\b', window)
+            bl_label = re.search(r'\bMBL\s*/\s*MAWB\b', row)
+            if bl_label:
+                window = ' '.join(value[max(0, bl_label.start()-2):] for value in date_rows[index:index+3])
+                bls += re.findall(r'([A-Z0-9-]{6,})\s*/\s*\d{2}/[A-Za-z]{3}/\d{4}', window)
+        if any(len(set(values)) != 1 for values in (regs, buyer, ids, invoice_dates, deadlines)) or len(set(bls)) > 1:
             raise fail()
         suppliers.update(regs); buyers.update(buyer); numbers.update(ids)
         dates.update(invoice_dates); dues.update(deadlines); references.update(bls)
@@ -241,13 +247,15 @@ def corroborate_total_transport(parsed, text):
     # Reject source credits/adjustments instead of discarding them during table reading.
     if re.search(r'\b(?:credit\s+(?:note|memo)|discount|round[ -]*off|adjustment)\b', text, re.I):
         raise fail()
-    headers = [(i, list(re.finditer(r'Particulars|HSN/SAC|Curr|Qty|Rate|ROE|Taxable|CGST|SGST|Total', row)))
+    headers = [(i, list(re.finditer(r'Particulars|HSN/SAC|Curr|Qty|Rate|ROE|Taxable|CGS(?:T)?|SGS(?:T)?|Total', row)))
                for i, row in enumerate(rows) if 'Particulars' in row and 'HSN/SAC' in row]
     if len(headers) != 1:
         raise fail()
     index, labels = headers[0]
-    if [m[0] for m in labels] != ['Particulars', 'HSN/SAC', 'Curr', 'Qty', 'Rate', 'ROE',
-                                  'Taxable', 'CGST', 'CGST', 'SGST', 'SGST', 'Total']:
+    if [m[0] for m in labels] not in (
+        ['Particulars', 'HSN/SAC', 'Curr', 'Qty', 'Rate', 'ROE', 'Taxable', 'CGST', 'CGST', 'SGST', 'SGST', 'Total'],
+        ['Particulars', 'HSN/SAC', 'Curr', 'Qty', 'Rate', 'ROE', 'Taxable', 'CGS', 'CGST', 'SGS', 'SGST', 'Total'],
+    ):
         raise fail()
     centers = [(m.start()+m.end())/2 for m in labels]
     # Description is left aligned; every numeric column is centred under its header.
@@ -258,7 +266,7 @@ def corroborate_total_transport(parsed, text):
     boundaries = [0, labels[1].start()]
     for left, right in zip(centers[1:-1], centers[2:]):
         nominal = int((left+right)/2+.5)
-        candidates = sorted(range(nominal-2, nominal+3), key=lambda value:(abs(value-nominal), value))
+        candidates = sorted(range(nominal-3, nominal+4), key=lambda value:(abs(value-nominal), value))
         # Wrapped figures may extend one character beyond a centred heading.
         # A boundary must not cut any printed token on any table row.
         boundary = next((value for value in candidates if all(
@@ -353,7 +361,6 @@ def corroborate_total_transport(parsed, text):
         if summary != groups:
             raise fail()
     return {'method':'pdftotext+total-transport-columns', 'text_sha256':hashlib.sha256(text.encode()).hexdigest()}
-
 
 OOCL_NAME = 'ORIENT OVERSEAS CONTAINER LINE LIMITED'
 

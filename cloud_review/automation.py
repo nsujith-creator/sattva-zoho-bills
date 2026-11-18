@@ -264,6 +264,30 @@ def corroborate_total_transport(parsed, text):
                 and re.fullmatch(r'\d{4,8}', tokens[-11])
                 and tokens[-10] in ('INR', 'USD', 'EUR')
                 and all(re.fullmatch(r'\d[\d,]*\.\d+', tokens[k]) for k in range(-9, 0)))
+    def merge_split_numbers(block_lines):
+        lines = list(block_lines)
+        for idx in range(len(lines) - 1):
+            top, bot = lines[idx], lines[idx + 1]
+            for top_m in re.finditer(r'(?<!\S)(\d[\d,]*\.|\d[\d,]*)(?!\S)', top):
+                top_tok = top_m.group(1)
+                for bot_m in re.finditer(r'(?<!\S)(\d+|\.\d+)(?!\S)', bot):
+                    bot_tok = bot_m.group(1)
+                    if not ((top_tok.endswith('.') and bot_tok.isdigit()) or (top_tok.isdigit() and bot_tok.startswith('.'))):
+                        continue
+                    if bot_m.start() < top_m.start() - 2 or bot_m.end() > top_m.end() + 3:
+                        continue
+                    combined = top_tok + bot_tok
+                    cand_bot = bot[:bot_m.start()] + combined + bot[bot_m.end():]
+                    cand_top = top[:top_m.start()] + (' ' * len(top_tok)) + top[top_m.end():]
+                    if is_numeric_tail(cand_bot.split()) or (len(cand_bot.split()) == 5 and cand_bot.split()[0].upper() == 'TOTAL'):
+                        lines[idx], lines[idx + 1] = cand_top, cand_bot
+                        break
+                    cand_top2 = top[:top_m.start()] + combined + top[top_m.end():]
+                    cand_bot2 = bot[:bot_m.start()] + (' ' * len(bot_tok)) + bot[bot_m.end():]
+                    if is_numeric_tail(cand_top2.split()) or (len(cand_top2.split()) == 5 and cand_top2.split()[0].upper() == 'TOTAL'):
+                        lines[idx], lines[idx + 1] = cand_top2, cand_bot2
+                        break
+        return [ln for ln in lines if ln.strip()]
     blocks, current = [], []
     for row in rows[index+2:end]:
         if not row.strip():
@@ -275,7 +299,8 @@ def corroborate_total_transport(parsed, text):
     if current:
         blocks.append(current)
     printed, total = [], None
-    for block in blocks:
+    for raw_block in blocks:
+        block = merge_split_numbers(raw_block)
         if total is not None:
             raise fail()
         first_tokens = block[0].split()

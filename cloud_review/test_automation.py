@@ -304,4 +304,44 @@ class BudgetAndProviderTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):a.Haiku(self.folder,self.transport).extract(PDF)
 
 
+class ZohoNarrowLookbackTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.core = core_fixture()
+
+    def test_narrow_lookback_only_when_description_row_has_no_amounts(self):
+        text = ('SYNTHETIC SAAS VENDOR\nSupplier GSTIN ' + GSTIN + '\nBuyer GSTIN ' + a.OWNER_GSTIN +
+                '\nInvoice SYNTHETIC-002\nInvoice Date 2026-10-28\nCurrency INR\n'
+                'SKU001   1.00   100.00   18%   18.00   100.00\n'
+                'Service : Cloud Plan\nTier : Pro\nSAC: 997331\n'
+                'Sub Total 100.00\nIGST18 (18%) 18.00\nGrand Total 118.00\n')
+        parsed = invoice()
+        parsed.update(vendor_name='SYNTHETIC SAAS VENDOR', bill_number='SYNTHETIC-002',
+                      tax_amount_cgst='0', tax_amount_sgst='0', tax_amount_igst='18.00',
+                      line_items=[{'description': 'Service : Cloud Plan, Tier : Pro', 'quantity': 1,
+                                   'rate': '100.00', 'tax_percentage': '18', 'hsn_or_sac': '997331', 'igst': '18.00'}])
+        proof = a.corroborate_source(parsed, text, self.core)
+        self.assertEqual(proof['method'], 'pdftotext+printed-fields')
+
+        # A second charge cannot reuse the already-consumed amount row above.
+        dup = copy.deepcopy(parsed)
+        dup.update(subtotal='200.00', invoice_total='218.00')
+        dup['line_items'] = [
+            {'description': 'Service : Cloud Plan', 'quantity': 1,
+             'rate': '100.00', 'tax_percentage': '18', 'hsn_or_sac': '997331', 'igst': '18.00'},
+            {'description': 'Service : Cloud Plan', 'quantity': 1,
+             'rate': '100.00', 'tax_percentage': '18', 'hsn_or_sac': '997331', 'igst': '18.00'},
+        ]
+        with self.assertRaisesRegex(a.Hold, r'Each extracted charge must match a distinct printed charge row and amount\.'):
+            a.corroborate_source(dup, text.replace('Sub Total 100.00', 'Sub Total 200.00').replace('Grand Total 118.00', 'Grand Total 218.00'), self.core)
+
+        # A row with its own wrong amount must never borrow a matching amount from the line above.
+        wrong_row = ('SYNTHETIC FREIGHT VENDOR\nSupplier GSTIN ' + GSTIN + '\nBuyer GSTIN ' + a.OWNER_GSTIN +
+                     '\nInvoice SYNTHETIC-001\nInvoice Date 2026-10-28\nCurrency INR\n'
+                     'Prior Charge   100.00\nDocumentation   50.00   18%\nSAC 996713\n'
+                     'Subtotal 100.00\nCGST 9.00\nSGST 9.00\nGrand Total 118.00\n')
+        with self.assertRaisesRegex(a.Hold, r'Each extracted charge must match a distinct printed charge row and amount\.'):
+            a.corroborate_source(invoice(), wrong_row, self.core)
+
+
 if __name__=='__main__':unittest.main()

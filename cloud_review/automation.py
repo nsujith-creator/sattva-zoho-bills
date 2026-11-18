@@ -691,23 +691,37 @@ def corroborate_source(parsed, text, core):
         matches = []
         for match in printed:
             begin = text.rfind('\n', 0, match.start())+1
-            window_start = text.rfind('\n', 0, begin - 1) + 1 if begin > 0 else 0
-            values = re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', text[window_start:row_end(text, match.start())])
-            if begin not in consumed_rows and values and Decimal(values[-1].replace(',', '')) == amount(line['rate']):
-                matches = [match]; consumed_rows.add(begin); break
+            end = row_end(text, match.start())
+            if begin in consumed_rows:
+                continue
+            row_amounts = re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', text[begin:end])
+            if row_amounts:
+                values = re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', text[match.start():end])
+                if values and Decimal(values[-1].replace(',', '')) == amount(line['rate']):
+                    matches = [(match, begin)]; consumed_rows.add(begin); break
+            elif begin > 0:
+                prev_begin = text.rfind('\n', 0, begin - 1) + 1
+                if prev_begin not in consumed_rows and prev_begin not in charge_starts:
+                    values = re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', text[prev_begin:begin - 1])
+                    if values and Decimal(values[-1].replace(',', '')) == amount(line['rate']):
+                        matches = [(match, prev_begin)]; consumed_rows.update({begin, prev_begin}); break
         if not matches:
             raise Hold('Each extracted charge must match a distinct printed charge row and amount.')
         bases, heads, percentages = [], {'CGST': set(), 'SGST': set(), 'IGST': set()}, set()
         charge_windows = []
-        for match in matches:
+        all_starts = sorted(set(charge_starts) | {
+            text.rfind('\n', 0, pos - 1) + 1 for pos in charge_starts
+            if pos > 0 and not re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', text[pos:row_end(text, pos)])
+        })
+        for match, window_start in matches:
             begin = text.rfind('\n', 0, match.start())+1
-            window_start = text.rfind('\n', 0, begin - 1) + 1 if begin > 0 else 0
             end = row_end(text, match.start())
             charge_row = text[begin:end]
-            values = re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', text[window_start:end])
+            scan_start = match.start() if window_start == begin else window_start
+            values = re.findall(r'\d[\d,]*\.\d{2}(?![\d%])', text[scan_start:end])
             if values:
                 bases.append(Decimal(values[-1].replace(',', '')))
-            boundary = next((pos for pos in charge_starts if pos > begin), min(len(text), begin+2000))
+            boundary = next((pos for pos in all_starts if pos > begin), min(len(text), begin+2000))
             window = text[window_start:boundary]
             charge_windows.append(window)
             for head, value in re.findall(r'(CGST|SGST|IGST|Central\s+GST|State\s+GST|Integrated\s+GST)(?:\s*@?\s*|\d+(?:\.\d+)?\s*\(\s*|\s*\(\s*)(\d+(?:\.\d+)?)\s*%', window, re.I):

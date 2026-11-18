@@ -102,5 +102,15 @@ class TotalTransport(unittest.TestCase):
             with self.assertRaises(a.Hold): a.corroborate_source(parsed,text+changed,core_fixture())
 
 
+    def test_wrapped_cgs_sgs_headers_and_split_amounts_corroborate(self):
+        parsed, text, _ = fixture()
+        wrapped = (text
+                   .replace('CGST       CGST       SGST       SGST', 'CGS        CGS        SGS        SGS ')
+                   .replace('Value       %          Amt        %          Amt', 'Value      T%          Amt       T%          Amt')
+                   .replace('Invoice Due Date : 07/Dec/2026', 'Invoice Due Date\n                                   : 07/Dec/2026'))
+        proof = a.corroborate_source(parsed, wrapped, core_fixture())
+        self.assertEqual(proof['method'], 'pdftotext+total-transport-columns')
+
+
 if __name__ == '__main__':
     unittest.main()

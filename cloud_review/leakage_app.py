@@ -366,10 +366,20 @@ a{color:var(--blue)}:focus-visible{outline:3px solid var(--sky);outline-offset:3
 .nav{display:flex;align-items:center;gap:28px}.nav a{color:rgba(255,255,255,.82);text-decoration:none;font-size:14px;padding:10px 0;border-bottom:2px solid transparent}
 .nav a[aria-current]{color:#fff;border-color:var(--electric)}.nav form{margin:0}
 .bar>form button,.nav button{background:transparent;color:rgba(255,255,255,.82);border:1px solid rgba(255,255,255,.25);border-radius:2px;font:500 13px var(--sans);min-height:40px;padding:0 14px;cursor:pointer}
-.hero{background:var(--navy);color:#fff;padding:clamp(48px,7vw,96px) var(--pad) clamp(48px,6vw,80px);display:grid;grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr);gap:clamp(32px,5vw,72px);align-items:center}
+.hero{background:var(--navy);color:#fff;padding:clamp(26px,3.4vw,40px) var(--pad) clamp(22px,2.8vw,32px);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:20px 48px;align-items:end}
+.state{display:flex;flex-direction:column;align-items:flex-end;gap:10px;text-align:right}
+.state .line{font:500 12px/1.5 var(--mono);letter-spacing:.06em;color:rgba(255,255,255,.75)}
+.state .line b{font-weight:500;color:#7fd3a8}.state .line b.bad{color:#ff8a80}
+.state form{display:flex;align-items:center;gap:12px;margin:0}
+.evidence{grid-column:1/-1;border-top:1px solid rgba(92,182,249,.25);padding-top:10px}
+.evidence>summary{list-style:none;cursor:pointer;font:500 11px/1.4 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--sky);display:inline-block;padding:6px 0}
+.evidence>summary::-webkit-details-marker{display:none}.evidence>summary::after{content:' +'}.evidence[open]>summary::after{content:' −'}
+.evidence dl{display:flex;flex-wrap:wrap;gap:8px 32px;margin:10px 0 4px}.evidence dt{font-size:12px;color:rgba(255,255,255,.6)}.evidence dd{margin:0;font-weight:600}
+.evidence p{margin:6px 0 4px;font-size:13px;color:rgba(255,255,255,.8);max-width:760px}
+.reasons{grid-column:1/-1;margin:0;padding:12px 14px;border-left:3px solid #ff8a80;background:rgba(255,138,128,.08);font-size:13px;color:#ffd6d2}
 .eyebrow{font:500 11px/1.4 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--electric)}
 .hero .eyebrow{color:var(--sky)}
-h1{margin:18px 0 0;font-weight:700;font-size:clamp(2.4rem,5vw,4.6rem);line-height:1.02;letter-spacing:-.045em}
+h1{margin:10px 0 0;font-weight:700;font-size:clamp(1.9rem,3.6vw,3.25rem);line-height:1.04;letter-spacing:-.04em}
 h1 .money{color:#ff6b5e}h1 .calm{color:#7fd3a8}
 .lede{margin:22px 0 0;max-width:620px;font-size:clamp(16px,1.6vw,19px);line-height:1.6;color:rgba(255,255,255,.82)}
 .register{border:1px solid rgba(92,182,249,.45);background:rgba(7,13,54,.6)}
@@ -387,16 +397,18 @@ h1 .money{color:#ff6b5e}h1 .calm{color:#7fd3a8}
 .btn[disabled]{opacity:.55;cursor:progress}
 .hint{font-size:12px;color:rgba(255,255,255,.6)}
 .strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));background:var(--blue);color:#fff;padding:0 var(--pad)}
-.strip div{padding:26px 24px;border-left:1px solid rgba(255,255,255,.22)}.strip div:first-child{border-left:0;padding-left:0}
-.strip b{display:block;font-size:clamp(24px,2.6vw,34px);font-weight:700;letter-spacing:-.03em;line-height:1.1}
+.strip div{padding:16px 24px;border-left:1px solid rgba(255,255,255,.22)}.strip div:first-child{border-left:0;padding-left:0}
+.strip b{display:block;font-size:clamp(20px,2vw,26px);font-weight:700;letter-spacing:-.03em;line-height:1.1}
 .strip span{font-size:13px;color:rgba(255,255,255,.8)}
-.section{display:grid;grid-template-columns:minmax(0,.62fr) minmax(0,1.38fr);gap:clamp(28px,5vw,72px);padding:clamp(56px,7vw,104px) var(--pad);border-top:1px solid var(--line)}
+.section{display:grid;grid-template-columns:minmax(0,.62fr) minmax(0,1.38fr);gap:clamp(28px,5vw,72px);padding:clamp(34px,4vw,56px) var(--pad);border-top:1px solid var(--line)}
 .section.wash{background:var(--wash)}
-.section h2{margin:12px 0 0;font-size:clamp(1.65rem,2.8vw,2.6rem);line-height:1.08;letter-spacing:-.035em;font-weight:700}
+.section h2{margin:10px 0 0;font-size:clamp(1.35rem,2.1vw,1.9rem);line-height:1.08;letter-spacing:-.035em;font-weight:700}
 .section .aside p{color:var(--slate);margin:14px 0 0;max-width:380px}
 .ledger{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
 .ledger>li{border-bottom:1px solid var(--line)}
-.ledger details>summary{list-style:none;display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:18px;padding:22px 0;cursor:pointer}
+.ledger details>summary{list-style:none;display:grid;grid-template-columns:40px minmax(0,1fr) auto;gap:16px;padding:16px 0 16px 14px;cursor:pointer}
+.ledger>li{border-left:3px solid var(--edge,transparent)}.ledger.confirmed{--edge:var(--loss)}.bucket .ledger{--edge:#efa21b}.ledger.accepted{--edge:#a5b1c6}
+.ledger>li:hover{background:rgba(232,245,255,.5)}
 .ledger details>summary::-webkit-details-marker{display:none}
 .ledger .n{font:500 14px/1.6 var(--mono);color:var(--electric)}
 .ledger .what{font-weight:600;font-size:16px;line-height:1.4}
@@ -405,11 +417,11 @@ h1 .money{color:#ff6b5e}h1 .calm{color:#7fd3a8}
 .ledger .amt{text-align:right;font-weight:700;font-size:20px;letter-spacing:-.02em;white-space:nowrap}
 .ledger .amt small{display:block;font:400 12px var(--sans);letter-spacing:0;color:var(--slate)}
 .confirmed .amt{color:var(--loss)}
-.gap{margin-top:12px;max-width:520px}.gap .track{position:relative;height:6px;background:var(--pale)}
+.gap{margin-top:8px;max-width:520px}.gap .track{position:relative;height:6px;background:var(--pale)}
 .gap .billed{position:absolute;inset:0 auto 0 0;background:var(--blue)}.gap .short{position:absolute;top:0;bottom:0;background:var(--loss)}
 .gap p{margin:6px 0 0;font:400 12px/1.4 var(--mono);color:var(--slate)}
 .ledger details[open]>summary .what{color:var(--blue)}
-.body{padding:0 0 26px 62px}
+.body{padding:0 0 22px 70px}
 .records{width:100%;border-collapse:collapse;font-size:13px}.records th{font:500 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--slate);text-align:left;padding:8px 10px 8px 0;border-bottom:1px solid var(--line)}
 .records td{padding:9px 10px 9px 0;border-bottom:1px solid #e6edf5;vertical-align:top}.records td:nth-child(4){white-space:nowrap}.records td.num{text-align:right;font-family:var(--mono);white-space:nowrap}
 .records .mono{font-family:var(--mono)}.scroll{overflow-x:auto}
@@ -440,13 +452,14 @@ h1 .money{color:#ff6b5e}h1 .calm{color:#7fd3a8}
 .log form{margin:0}.log button{background:none;border:0;color:var(--blue);font:500 13px var(--sans);cursor:pointer;padding:0;min-height:32px;text-decoration:underline}
 .foot{background:var(--navy);color:rgba(255,255,255,.6);padding:28px var(--pad);font-size:12px;display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px}
 .foot b{color:#fff;font-weight:600}
-@media (max-width:980px){.hero,.section{grid-template-columns:minmax(0,1fr)}.strip{grid-template-columns:1fr 1fr}.strip div:nth-child(3){border-left:0;padding-left:0}.strip div{border-top:1px solid rgba(255,255,255,.18)}}
+@media (max-width:980px){.section{grid-template-columns:minmax(0,1fr)}.strip{grid-template-columns:1fr 1fr}.strip div:nth-child(3){border-left:0;padding-left:0}.strip div{border-top:1px solid rgba(255,255,255,.18)}}
 @media (max-width:640px){.bucket>summary{grid-template-columns:minmax(0,1fr) auto;padding-left:22px}.bucket>summary::before{margin-left:-22px}.bcount{display:none}
 .bar{flex-wrap:wrap;min-height:0;padding-top:12px;padding-bottom:0;gap:4px 12px}.mark{width:44px;height:44px;flex-basis:44px}.mark img{height:44px}
 .brand{font-size:15px;gap:10px}.brand small{display:none}.nav{order:3;width:100%;gap:22px;border-top:1px solid rgba(255,255,255,.1)}.nav a{font-size:14px;padding:12px 0}
 .bar>form button{min-height:36px;padding:0 10px;font-size:12px}
-.ledger details>summary{grid-template-columns:minmax(0,1fr) auto;gap:12px}.ledger .n{display:none}.body{padding-left:0}.ledger .amt{font-size:17px}
-.register dl div{padding:12px}.strip div{padding:20px 14px}}
+.ledger details>summary{grid-template-columns:minmax(0,1fr) auto;gap:12px;padding-left:12px}.ledger .n{display:none}.body{padding-left:12px}
+.hero{grid-template-columns:minmax(0,1fr)}.state{align-items:flex-start;text-align:left}.ledger .amt{font-size:17px}
+.strip div{padding:12px 14px}.strip b{font-size:20px}.section .aside p{display:none}.section{gap:16px}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 '''
 
@@ -558,7 +571,7 @@ def page(report, started_at, email_status, runs, decisions, csrf, running=False,
     if not report:
         hero = ('<section class="hero"><div><div class="eyebrow">Leakage check · vendor cost → customer invoice</div>'
                 '<h1>No check has run yet.</h1><p class="lede">The first check reads every FY26-27 vendor bill, sales invoice and credit note from Zoho, read-only, '
-                'and matches them by MBL and container number.</p></div><div class="register"><header><span>Run</span><span>Not started</span></header>'+run_form+'</div></section>')
+                'and matches them by MBL and container number.</p></div><div class="state">'+run_form+'</div></section>')
         return head+flash_html+hero+'<footer class="foot"><span><b>Sattva Books</b> · read-only against Zoho</span></footer>'+refresh+'</body></html>'
 
     t = report['totals_inr']
@@ -577,20 +590,18 @@ def page(report, started_at, email_status, runs, decisions, csrf, running=False,
         lede = 'Every in-scope vendor cost matched a customer invoice. '+str(len(potential))+' item'+('s' if len(potential) != 1 else '')+' still need a look below.'
     ev = report.get('evidence_counts', {})
     reasons = report.get('incomplete_reasons') or []
-    verdict = ('<div class="verdict bad">'+esc('; '.join(reasons[:4]))+'</div>') if reasons else \
-              '<div class="verdict">Every list and record was read. Uncertain matches are shown, never cleared.</div>'
-    register = ('<div class="register"><header><span>This check</span><span>'+esc(ist(started_at))+' IST</span></header><dl>'
-                '<div><dt>Status</dt><dd>'+('Complete' if complete else 'Incomplete')+'</dd></div>'
-                '<div><dt>Shipments matched</dt><dd>'+esc(report.get('shipments', 0))+'</dd></div>'
-                '<div><dt>Vendor bills</dt><dd>'+esc(ev.get('bills', 0))+'</dd></div>'
-                '<div><dt>Sales invoices</dt><dd>'+esc(ev.get('invoices', 0))+'</dd></div>'
-                '<div><dt>Credit notes</dt><dd>'+esc(ev.get('creditnotes', 0))+'</dd></div>'
-                '<div><dt>Email</dt><dd>'+esc((email_status or '—').capitalize())+'</dd></div>'
-                '</dl>'+verdict+run_form+'</div>')
-    hero = ('<section class="hero"><div><div class="eyebrow">Leakage check · FY26-27 · as of '+esc(report.get('as_of'))+'</div>'
-            '<h1>'+title+'</h1><p class="lede">'+esc(lede)+'</p></div>'+register+'</section>')
+    status_line = ('<div class="line"><b'+('' if complete else ' class="bad"')+'>● '+('Complete' if complete else 'Incomplete')+'</b> · checked '+
+                   esc(ist(started_at))+' IST · email '+esc(email_status or '—')+'</div>')
+    evidence = ('<details class="evidence"><summary>What this check read</summary><dl>'
+                '<div><dt>Vendor bills</dt><dd>'+esc(ev.get('bills', 0))+'</dd></div><div><dt>Sales invoices</dt><dd>'+esc(ev.get('invoices', 0))+'</dd></div>'
+                '<div><dt>Credit notes</dt><dd>'+esc(ev.get('creditnotes', 0))+'</dd></div><div><dt>Shipments matched</dt><dd>'+esc(report.get('shipments', 0))+'</dd></div>'
+                '<div><dt>Zoho requests</dt><dd>'+esc(report.get('api_calls', '—'))+'</dd></div></dl>'
+                '<p>'+esc(lede)+' Every list and record was read; uncertain matches are shown, never cleared.</p></details>')
+    reasons_html = ('<p class="reasons" role="alert"><b>Why incomplete:</b> '+esc('; '.join(reasons[:6]))+'</p>') if reasons else ''
+    hero = ('<section class="hero"><div><div class="eyebrow">Leakage check · FY26-27 · pre-GST INR</div><h1>'+title+'</h1></div>'
+            '<div class="state">'+status_line+run_form+'</div>'+(reasons_html or evidence)+'</section>')
     strip = ('<section class="strip" aria-label="Totals">'
-             '<div><b>₹'+esc(inr(conf_amt))+'</b><span>confirmed leakage</span></div>'
+             '<div><b>'+str(n_conf)+'</b><span>shipment'+('s' if n_conf != 1 else '')+' leaking</span></div>'
              '<div><b>'+str(len(potential))+'</b><span>need your call</span></div>'
              '<div><b>₹'+esc(inr(t['accepted_losses']))+'</b><span>accepted or written off</span></div>'
              '<div><b>₹'+esc(inr(t['excluded_overhead']))+'</b><span>overhead, excluded</span></div></section>')
@@ -636,7 +647,7 @@ def page(report, started_at, email_status, runs, decisions, csrf, running=False,
                      '"><button type="submit">Undo</button></form></td></tr>')
     sec_acc = ('<section class="section" id="accepted"><div class="aside"><div class="eyebrow">Your decisions</div><h2>Accepted, written off, explained.</h2>'
                '<p>Every decision carries its reason. Undo puts the item back in the next check.</p></div><div>'+
-               ('<ol class="ledger">'+acc_rows+'</ol>' if acc_rows else '<p class="empty">No accepted losses or write-offs in this check.</p>')+
+               ('<ol class="ledger accepted">'+acc_rows+'</ol>' if acc_rows else '<p class="empty">No accepted losses or write-offs in this check.</p>')+
                ('<div class="group" style="margin-top:40px"><h3><span>Decisions on record · '+str(len(decisions))+'</span></h3><div class="scroll"><table class="log"><thead><tr><th>Decision</th><th>On</th><th>Reason</th><th>When (IST)</th><th></th></tr></thead><tbody>'+
                 dec_rows+'</tbody></table></div></div>' if dec_rows else '')+'</div></section>')
 

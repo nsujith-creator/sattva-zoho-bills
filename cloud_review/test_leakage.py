@@ -247,6 +247,14 @@ class Cases(unittest.TestCase):
         r = L.reconcile(evidence([bill('1')], [invoice('9')], [cn]), TODAY)
         self.assertEqual(types(r, 'potential_issues'), ['billed below cost'])
 
+    def test_credit_application_is_not_customer_cash(self):
+        # Invoice 9 fully credited (balance 0) and re-issued as 8, which is overdue; vendor paid in full.
+        cn = {'creditnote_id': '5', 'creditnote_number': 'CN-5', 'customer_id': 'C1', 'customer_name': 'Customer C1', 'date': '2026-10-04',
+              'status': 'closed', 'sub_total': '12000', 'total': '14160', 'exchange_rate': 1, 'invoices_credited': [{'invoice_id': '9'}]}
+        r = L.reconcile(evidence([bill('1')], [invoice('9'), invoice('8', d='2026-10-05', status='overdue', balance='14160')], [cn]), TODAY)
+        self.assertEqual(types(r, 'confirmed_leakage'), ['UNRECOVERED VENDOR PAYMENT'])
+        self.assertEqual(r['confirmed_leakage'][0]['exposure_inr'], '10000.00')
+
     def test_untied_credit_note_flagged(self):
         cn = {'creditnote_id': '5', 'creditnote_number': 'CN-5', 'customer_id': 'C1', 'customer_name': 'X', 'date': '2026-10-10',
               'status': 'open', 'sub_total': '100', 'total': '118', 'exchange_rate': 1}

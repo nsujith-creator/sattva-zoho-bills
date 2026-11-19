@@ -623,7 +623,9 @@ def reconcile(evidence, today, decisions=None, incomplete_reasons=(), since=FY_S
             issue(potential, 'late cost while margin still positive', late_cost, 'Vendor cost dated after the last invoice; margin remains positive.', **common)
 
         vendor_paid = sum((bill_cost(b)*paid_fraction(b) for b in sbills), Decimal(0))
+        # A credit note applied to an invoice clears its balance but is not cash from the customer.
         received = sum((dec(i.get('sub_total'))*rate(i)*paid_fraction(i) for i in billed), Decimal(0))
+        received = max(Decimal(0), received-sum((dec(cn.get('sub_total'))*rate(cn) for cn in tied), Decimal(0)))
         past_due = [i for i in billed if dec(i.get('balance')) > 0 and (str(i.get('status')).lower() == 'overdue' or
                     (i.get('due_date') and str(i['due_date']) < str(today)))]
         if past_due and vendor_paid-received > TOLERANCE:

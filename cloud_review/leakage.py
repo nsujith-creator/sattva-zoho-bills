@@ -271,7 +271,9 @@ def candidates(text):
     return out
 
 
-_MBL_LABEL = re.compile(r'(?:\bM\.?\s?B\.?\s?/?\s?L\b|\bB\s?/\s?L\b|\bBL\b|BILL OF LADING)\.?\s*(?:NO\b\.?|NUMBER|#)?\s*[:.\-]?\s*((?:[A-Z0-9][A-Z0-9\-/]*\s*){1,3})')
+# Master and house bill-of-lading labels. Customer invoices sometimes carry the HBL in the
+# "MBL #" slot (live data, 19 Nov 2026), so labelled house numbers on bills are keys too.
+_MBL_LABEL = re.compile(r'(?:\b[MH]\.?\s?B\.?\s?/?\s?L\b|\bB\s?/\s?L\b|\bBL\b|BILL OF LADING|\b(?:MASTER|HOUSE)(?:\s+B\s?/\s?L)?)\.?\s*(?:NO\b\.?|NUMBER|#)?\s*[:.\-]?\s*((?:[A-Z0-9][A-Z0-9\-/]*\s*){1,3})')
 
 
 def labelled_mbls(text):
@@ -387,7 +389,7 @@ def inv_rec(inv):
             'reference_number': inv.get('reference_number')}
 
 
-def reconcile(evidence, today, decisions=None, incomplete_reasons=()):
+def reconcile(evidence, today, decisions=None, incomplete_reasons=(), since=FY_START):
     decisions = decisions or {'links': [], 'overhead': [], 'accepted_losses': []}
     confirmed, potential, accepted, excluded, notes = [], [], [], [], []
 
@@ -429,6 +431,25 @@ def reconcile(evidence, today, decisions=None, incomplete_reasons=()):
         if number and len(group) > 1:
             issue(potential, 'possible duplicate vendor bill', bill_cost(group[0])*(len(group)-1),
                   'Same vendor and bill number recorded '+str(len(group))+' times.', bills=group)
+
+    # Re-issued vendor bill: same vendor, same shipment key, identical line descriptions.
+    by_vendor_key = {}
+    for b in bills.values():
+        for key in bill_keys(b):
+            by_vendor_key.setdefault((str(b.get('vendor_id')), key), {})[str(b['bill_id'])] = b
+    flagged = set()
+    for (vendor, key), group in by_vendor_key.items():
+        group = sorted(group.values(), key=lambda b: str(b.get('date')))
+        for x in range(len(group)):
+            for y in range(x+1, len(group)):
+                a, c = group[x], group[y]
+                pair = (str(a['bill_id']), str(c['bill_id']))
+                lines = lambda d: sorted(norm(l.get('description') or l.get('name')) for l in d.get('line_items') or [])
+                if pair not in flagged and lines(a) == lines(c) and norm(a.get('bill_number')) != norm(c.get('bill_number')):
+                    flagged.add(pair)
+                    issue(potential, 'possible re-issued vendor bill booked twice', min(bill_cost(a), bill_cost(c)),
+                          'Same vendor and shipment key '+key+' with identical line items under different bill numbers: '
+                          'confirm whether this is a second container/charge or a duplicate booking/payment.', bills=[a, c], keys=[key])
 
     # Classify bills and build shipments (union of bills sharing any key).
     keys_of, parent = {}, {}
@@ -475,7 +496,7 @@ def reconcile(evidence, today, decisions=None, incomplete_reasons=()):
             if line.get('bill_id'):
                 native.setdefault(str(line['bill_id']), set()).add(iid)
 
-    shipments = []
+    shipments, near_invoices = [], set()
     for members in groups.values():
         sbills = [bills[m] for m in sorted(members)]
         keys = set().union(*(keys_of[m] for m in members))
@@ -560,6 +581,7 @@ def reconcile(evidence, today, decisions=None, incomplete_reasons=()):
             if drafts:
                 issue(potential, 'draft invoice only', cost, 'Matching invoice exists only as draft; not billing.', **common)
             elif close:
+                near_invoices.update(close)
                 common['invoices'] = [invoices[i] for i in sorted(close)]
                 issue(potential, 'uncertain near match', cost, 'No exact invoice; near key match(es) need owner confirmation.',
                       near_matches={i: sorted(v) for i, v in close.items()}, **common)
@@ -611,6 +633,12 @@ def reconcile(evidence, today, decisions=None, incomplete_reasons=()):
             issue(potential, 'overdue receivable (vendor not yet paid)', sum((dec(i.get('balance'))*rate(i) for i in past_due), Decimal(0)),
                   'Customer invoice past due.', **common)
 
+    # Billing with no recorded vendor cost: not leakage, but the shipment's cost evidence is missing.
+    for iid, inv in sorted(invoices.items()):
+        if iid not in inv_shipments and iid not in near_invoices and str(inv.get('status', '')).lower() in BILLED_INVOICE and str(inv.get('date')) >= since:
+            issue(potential, 'invoice with no vendor cost recorded', 0,
+                  'Customer billed but no vendor bill carries this shipment key; cost may be unbooked or keyless.', invoices=[inv])
+
     # Deduplicated confirmed exposure: one shipment can carry several confirmed findings.
     per_shipment = {}
     for item in confirmed:
@@ -659,7 +687,7 @@ def run_once(out, cache_dir=None, decisions_path=None, budget=1500, today=None, 
     today = today or datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
     client = client or ReadOnlyZoho(load_config(env), budget=budget)
     evidence, reasons, calls = collect(client, Cache(cache_dir), since)
-    report = reconcile(evidence, today, load_decisions(decisions_path), reasons)
+    report = reconcile(evidence, today, load_decisions(decisions_path), reasons, since)
     report.update(api_calls=calls, bills_since=since, generated_at=datetime.now(timezone.utc).isoformat(timespec='seconds'))
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=1, sort_keys=True))

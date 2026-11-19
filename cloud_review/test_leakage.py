@@ -187,6 +187,22 @@ class Cases(unittest.TestCase):
         r = L.reconcile(evidence([bill('1', number='X/1'), bill('2', number='X-1')], [invoice('9', amount='30000')]), TODAY)
         self.assertIn('possible duplicate vendor bill', types(r, 'potential_issues'))
 
+    def test_reissued_vendor_bill_same_lines_flagged(self):
+        r = L.reconcile(evidence([bill('1', number='A1', amount='1000'), bill('2', number='A2', amount='990', d='2026-10-04')],
+                                 [invoice('9', amount='1200')]), TODAY)
+        self.assertIn('possible re-issued vendor bill booked twice', types(r, 'potential_issues'))
+
+    def test_house_number_in_bill_notes_matches_invoice_mbl_slot(self):
+        b = bill('1', ref='MEDUAIX20528', notes='Master Number MEDUAIX20528, House Number NAV26MU3036, Vessel X')
+        self.assertIn('NAV26MU3036', L.bill_keys(b))
+        r = L.reconcile(evidence([b], [invoice('9', text='Freight', notes='MBL #: NAV26MU3036 / NAV26MU3037', amount='12000')]), TODAY)
+        self.assertEqual(r['confirmed_leakage'] + r['potential_issues'], [])
+
+    def test_invoice_without_vendor_cost_is_listed_without_exposure(self):
+        r = L.reconcile(evidence([], [invoice('9')]), TODAY)
+        self.assertEqual(types(r, 'potential_issues'), ['invoice with no vendor cost recorded'])
+        self.assertEqual(r['totals_inr']['potential'], '0.00')
+
     def test_invoice_matching_two_shipments_is_uncertain(self):
         r = L.reconcile(evidence([bill('1', ref='OOLU2712345678'), bill('2', ref='MSCU1111111111')],
                                  [invoice('9', text='OOLU2712345678 and MSCU1111111111')]), TODAY)

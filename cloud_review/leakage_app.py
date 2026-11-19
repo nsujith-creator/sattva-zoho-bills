@@ -346,7 +346,7 @@ def ist(value):
         return str(value or '')
 
 
-CSS = r'''
+BASE_CSS = r'''
 @font-face{font-family:Poppins;font-weight:400;font-display:swap;src:url(/static/fonts/poppins-latin-400-normal.woff2) format('woff2')}
 @font-face{font-family:Poppins;font-weight:500;font-display:swap;src:url(/static/fonts/poppins-latin-500-normal.woff2) format('woff2')}
 @font-face{font-family:Poppins;font-weight:600;font-display:swap;src:url(/static/fonts/poppins-latin-600-normal.woff2) format('woff2')}
@@ -366,6 +366,13 @@ a{color:var(--blue)}:focus-visible{outline:3px solid var(--sky);outline-offset:3
 .nav{display:flex;align-items:center;gap:28px}.nav a{color:rgba(255,255,255,.82);text-decoration:none;font-size:14px;padding:10px 0;border-bottom:2px solid transparent}
 .nav a[aria-current]{color:#fff;border-color:var(--electric)}.nav form{margin:0}
 .bar>form button,.nav button{background:transparent;color:rgba(255,255,255,.82);border:1px solid rgba(255,255,255,.25);border-radius:2px;font:500 13px var(--sans);min-height:40px;padding:0 14px;cursor:pointer}
+@media (max-width:640px){.bar{flex-wrap:wrap;min-height:0;padding-top:12px;padding-bottom:0;gap:4px 12px}.mark{width:44px;height:44px;flex-basis:44px}.mark img{height:44px}
+.brand{font-size:15px;gap:10px}.brand small{display:none}.nav{order:3;width:100%;gap:22px;border-top:1px solid rgba(255,255,255,.1)}.nav a{font-size:14px;padding:12px 0}
+.bar>form button{min-height:36px;padding:0 10px;font-size:12px}
+}
+'''
+
+CSS = BASE_CSS + r'''
 .hero{background:var(--navy);color:#fff;padding:clamp(26px,3.4vw,40px) var(--pad) clamp(22px,2.8vw,32px);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:20px 48px;align-items:end}
 .state{display:flex;flex-direction:column;align-items:flex-end;gap:10px;text-align:right}
 .state .line{font:500 12px/1.5 var(--mono);letter-spacing:.06em;color:rgba(255,255,255,.75)}
@@ -454,14 +461,20 @@ h1 .money{color:#ff6b5e}h1 .calm{color:#7fd3a8}
 .foot b{color:#fff;font-weight:600}
 @media (max-width:980px){.section{grid-template-columns:minmax(0,1fr)}.strip{grid-template-columns:1fr 1fr}.strip div:nth-child(3){border-left:0;padding-left:0}.strip div{border-top:1px solid rgba(255,255,255,.18)}}
 @media (max-width:640px){.bucket>summary{grid-template-columns:minmax(0,1fr) auto;padding-left:22px}.bucket>summary::before{margin-left:-22px}.bcount{display:none}
-.bar{flex-wrap:wrap;min-height:0;padding-top:12px;padding-bottom:0;gap:4px 12px}.mark{width:44px;height:44px;flex-basis:44px}.mark img{height:44px}
-.brand{font-size:15px;gap:10px}.brand small{display:none}.nav{order:3;width:100%;gap:22px;border-top:1px solid rgba(255,255,255,.1)}.nav a{font-size:14px;padding:12px 0}
-.bar>form button{min-height:36px;padding:0 10px;font-size:12px}
 .ledger details>summary{grid-template-columns:minmax(0,1fr) auto;gap:12px;padding-left:12px}.ledger .n{display:none}.body{padding-left:12px}
 .hero{grid-template-columns:minmax(0,1fr)}.state{align-items:flex-start;text-align:left}.ledger .amt{font-size:17px}
 .strip div{padding:12px 14px}.strip b{font-size:20px}.section .aside p{display:none}.section{gap:16px}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 '''
+
+
+def books_header(active=None):
+    """Shared Books navy bar. active: 'inbox', 'leakage', or None (signed out: no navigation)."""
+    links = (('inbox', '/', 'Bills inbox'), ('leakage', '/leakage', 'Leakage'))
+    nav = '' if active is None else ('<nav class="nav" aria-label="Books">'+''.join(
+        '<a href="'+href+'"'+(' aria-current="page"' if key == active else '')+'>'+label+'</a>' for key, href, label in links)+'</nav>')
+    return ('<header class="bar"><a class="brand" href="/" aria-label="Sattva Books home"><span class="mark" aria-hidden="true">'
+            '<img src="/static/sattva-swirl-white.svg" alt=""></span>Sattva Global Logistics<small>Books</small></a>'+nav+'</header>')
 
 
 def gap_bar(item, confirmed):
@@ -555,11 +568,8 @@ def ledger_row(n, item, csrf, confirmed=False):
 
 
 def page(report, started_at, email_status, runs, decisions, csrf, running=False, flash='', flash_bad=False, enabled=True, daily_hour=8):
-    nav = ('<nav class="nav" aria-label="Books"><a href="/">Bills inbox</a><a href="/leakage" aria-current="page">Leakage</a></nav>')
     head = ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            '<title>Leakage · Sattva Books</title><style>'+CSS+'</style></head><body>'
-            '<header class="bar"><a class="brand" href="/" aria-label="Sattva Books home"><span class="mark" aria-hidden="true"><img src="/static/sattva-swirl-white.svg" alt=""></span>'
-            'Sattva Global Logistics<small>Books</small></a>'+nav+'</header>')
+            '<title>Leakage · Sattva Books</title><style>'+CSS+'</style></head><body>'+books_header('leakage'))
     flash_html = ('<p class="flash'+(' bad' if flash_bad else '')+'" role="status">'+esc(flash)+'</p>') if flash else ''
     run_form = ('<form method="post" action="/leakage/run"><input type="hidden" name="csrf" value="'+esc(csrf)+'">'
                 '<button class="btn btn-light" type="submit"'+(' disabled' if running or not enabled else '')+'>'+

@@ -24,33 +24,29 @@ import leakage_app
 MAX_PDF = 12 * 1024 * 1024
 PAGE_SIZE = 100
 
-CSS = r'''
-:root { color-scheme:light; --ink:#112033; --muted:#5a6b7f; --line:#d9e0e8; --accent:#245ddc; --paper:#fff; --wash:#f3f6fa; }
-* { box-sizing:border-box; }
-body { margin:0; color:var(--ink); background:var(--paper); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; -webkit-font-smoothing:antialiased; }
-header { display:flex; flex-wrap:wrap; gap:12px; justify-content:space-between; align-items:center; padding:17px clamp(18px,4vw,64px); border-bottom:1px solid var(--line); }
-.brand { font-size:15px; letter-spacing:-.3px; font-weight:760; }.brand span { color:var(--muted); font-weight:500; margin-left:12px; border-left:1px solid #aab6c4; padding-left:12px; }
-.mode { font-size:11px; letter-spacing:.12em; font-weight:730; color:#506274; text-transform:uppercase; }
-main { width:min(960px,calc(100% - 36px)); margin:clamp(36px,7vw,88px) auto 100px; }
-.eyebrow { font-weight:750; letter-spacing:.13em; text-transform:uppercase; color:var(--accent); font-size:11px; }
-h1 { margin:12px 0 8px; font-size:clamp(36px,7vw,64px); letter-spacing:-.055em; line-height:1.03; font-weight:730; }
-.lede { font-size:16px; line-height:1.55; color:var(--muted); margin:16px 0 36px; max-width:650px; }
-.upload { display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between; padding:28px; background:var(--wash); border:1px dashed #a6b6c8; border-radius:12px; }
-.upload strong { display:block; font-size:16px; margin-bottom:6px; }.upload .hint { font-size:13px; color:var(--muted); }
-button { background:var(--accent); color:white; border:none; border-radius:8px; font:700 14px system-ui,sans-serif; min-height:46px; padding:11px 20px; cursor:pointer; }
-button:hover { background:#1949b9; }button:focus-visible,a:focus-visible,input:focus-visible { outline:3px solid #ff9b35; outline-offset:3px; }
+CSS = leakage_app.BASE_CSS + r'''
+main { width:min(1040px,calc(100% - 48px)); margin:clamp(32px,5vw,64px) auto 80px; }
+.eyebrow { font:500 11px/1.4 var(--mono); letter-spacing:.14em; text-transform:uppercase; color:var(--electric); }
+h1 { margin:10px 0 6px; font-size:clamp(2rem,4.2vw,3.4rem); letter-spacing:-.04em; line-height:1.04; font-weight:700; }
+.lede { font-size:16px; line-height:1.6; color:var(--slate); margin:12px 0 28px; max-width:680px; }
+.upload { display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between; padding:24px 28px; background:var(--wash); border:1px dashed #a9bdd6; border-radius:2px; }
+.upload strong { display:block; font-size:16px; font-weight:600; margin-bottom:4px; }.upload .hint { font-size:13px; color:var(--slate); }
+button { background:var(--electric); color:#fff; border:none; border-radius:2px; font:600 14px var(--sans); min-height:46px; padding:0 22px; cursor:pointer; }
+button:hover { background:#0f63d8; }
 button[disabled] { opacity:.5; cursor:not-allowed; }input[type=file] { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
-#message { min-height:26px; margin:12px 0 40px; color:var(--muted); font-size:13px; }#message.error { color:#a12727; }#message.ok { color:#125e48; }
-section { margin-top:48px; }.section-head { display:flex; align-items:baseline; justify-content:space-between; padding-bottom:14px; border-bottom:1px solid var(--line); gap:12px; }
-h2 { font-size:21px; letter-spacing:-.03em; margin:0; }.count { color:var(--muted); font-size:12px; }
-.grid-head { display:grid; grid-template-columns:minmax(0,1fr) 150px 140px; color:#66758a; font-size:11px; font-weight:750; text-transform:uppercase; letter-spacing:.08em; padding:16px 0 10px; }
-.invoice { display:grid; grid-template-columns:minmax(0,1fr) 150px 140px; gap:0; align-items:center; padding:19px 0; border-top:1px solid #e7edf2; font-size:13px; }
-.invoice a { color:var(--ink); font-weight:650; text-decoration:underline; text-decoration-color:#bbc8d6; text-underline-offset:4px; overflow-wrap:anywhere; }
-.invoice .stamp { color:var(--muted); } .status { color:#43566b; font-size:12px; }
-.empty { padding:50px 0; color:var(--muted); font-size:14px; }
-.pagination { display:flex; flex-wrap:wrap; justify-content:space-between; gap:16px; align-items:center; margin-top:22px; font-size:13px; }.pagination a { color:var(--accent); padding:9px 0; }
-footer { border-top:1px solid var(--line); padding:25px 0; margin-top:60px; color:var(--muted); font-size:12px; line-height:1.5; }
-@media(max-width:640px){header{padding:17px 18px}.brand span{display:block;border:0;padding:0;margin:3px 0 0;font-size:12px}.upload{align-items:stretch;padding:20px}.upload button{width:100%}.grid-head{display:none}.invoice{grid-template-columns:minmax(0,1fr) auto;row-gap:9px}.invoice .status{grid-column:1 / -1;grid-row:2}.stamp{text-align:right} .lede{font-size:15px}}
+#message { min-height:26px; margin:12px 0 28px; color:var(--slate); font-size:13px; }#message.error { color:#a12727; }#message.ok { color:#0f7a4a; }
+section { margin-top:36px; }.section-head { display:flex; align-items:baseline; justify-content:space-between; padding-bottom:12px; border-bottom:1px solid var(--line); gap:12px; }
+h2 { font-size:22px; letter-spacing:-.03em; margin:0; font-weight:700; }.count { font:500 12px var(--mono); color:var(--slate); }
+.grid-head { display:grid; grid-template-columns:minmax(0,1fr) 170px 160px; font:500 11px var(--mono); letter-spacing:.1em; text-transform:uppercase; color:var(--slate); padding:14px 0 10px; }
+.invoice { display:grid; grid-template-columns:minmax(0,1fr) 170px 160px; align-items:center; padding:16px 0; border-top:1px solid var(--line); font-size:14px; }
+.invoice a { color:var(--ink); font-weight:600; text-decoration:none; overflow-wrap:anywhere; }.invoice a:hover { color:var(--blue); text-decoration:underline; text-underline-offset:4px; }
+.invoice .stamp { color:var(--slate); font:400 12px var(--mono); } .status { color:var(--ink); font-size:13px; }
+.empty { padding:40px 0; color:var(--slate); font-size:14px; border-top:1px solid var(--line); }
+.pagination { display:flex; flex-wrap:wrap; justify-content:space-between; gap:16px; align-items:center; margin-top:20px; font-size:13px; }.pagination a { color:var(--blue); padding:9px 0; }
+main [role=alert]:empty { display:none; }
+main [role=alert] { padding:12px 14px; border-left:3px solid #c62828; background:#fdecea; color:#8e1c1c; font-size:14px; }
+footer { border-top:1px solid var(--line); padding:22px 0; margin-top:48px; color:var(--slate); font-size:12px; line-height:1.6; }
+@media(max-width:640px){main{width:calc(100% - 32px)}.upload{align-items:stretch;padding:20px}.upload button{width:100%}.grid-head{display:none}.invoice{grid-template-columns:minmax(0,1fr) auto;row-gap:6px}.invoice .status{grid-column:1 / -1;grid-row:2}.stamp{text-align:right}.lede{font-size:15px}}
 @media(prefers-reduced-motion:no-preference){button{transition:background .12s ease;}}
 '''
 
@@ -153,9 +149,9 @@ def template(rows, csrf, total=None, page=1, pages=1, automation=None):
     maximum = AUTOMATIC_MAX_PDF if automation else MAX_PDF
     max_mb = '5' if automation else '12'
     upload_js = JS.replace('__MAX_PDF__', str(maximum)).replace('__MAX_MB__', max_mb)
-    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf-token" content="{html.escape(csrf, quote=True)}"><title>Sattva · Bills Review</title><style>{CSS}</style></head><body>
-<header><div class="brand">SATTVA <span>Bills</span></div><div class="mode"><a href="/leakage" style="color:var(--accent);margin-right:18px;text-transform:none;letter-spacing:0;font-size:13px">Leakage ledger</a>{mode}</div></header>
-<main><div class="eyebrow">INVOICE CONTROL</div><h1>Every bill,<br>accounted for.</h1>
+    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf-token" content="{html.escape(csrf, quote=True)}"><title>Bills inbox · Sattva Books</title><style>{CSS}</style></head><body>
+{leakage_app.books_header('inbox')}
+<main><div class="eyebrow">Bills inbox · {html.escape(mode)}</div><h1>Every bill, accounted for.</h1>
 <p class="lede">{intro}</p>{warning}
 <div class="upload"><div><strong>Drop a supplier invoice here</strong><div class="hint">PDF only · Maximum {max_mb} MB · Stored privately on the server</div></div><div><input id="pdf" type="file" accept=".pdf,application/pdf" aria-label="Select PDF invoice"><button id="upload-btn" type="button">Choose PDF</button></div></div><div id="message" role="status" aria-live="polite"></div>
 <section><div class="section-head"><h2>Review inbox</h2><span class="count">{total} invoice{'s' if total != 1 else ''}</span></div><div class="grid-head"><span>Original PDF</span><span>Received (UTC)</span><span>Status</span></div>{content}{pagination}</section>
@@ -272,9 +268,9 @@ class Handler(BaseHTTPRequestHandler):
             self.err(400, 'Secure proxy client address unavailable. Please try again.');return
         token = self.server.auth.form(peer)
         esc = lambda s:html.escape(s,quote=True)
-        page = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · Sattva Bills</title><style>{CSS}
-main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%}}h1{{font-size:42px;line-height:1.08}}label{{display:block;font-size:14px;font-weight:650;margin:28px 0 8px}}input[type=password]{{width:100%;font:18px system-ui;padding:13px;border:1px solid #a6b6c8;border-radius:6px}}.sign-in{{width:100%;margin-top:18px}}.login-message{{font-size:14px;line-height:1.5;color:#a12727;min-height:25px}}.privacy{{color:var(--muted);font-size:13px;line-height:1.6;margin-top:26px}}</style></head><body>
-<header><div class="brand">SATTVA <span>Bills review</span></div><div class="mode">Owner access</div></header><main><div class="eyebrow">PRIVATE INVOICE INBOX</div><h1>Sign in to<br>your bills.</h1><p class="lede">Open your supplier invoices and saved drafts.</p><p class="login-message" role="alert">{esc(message)}</p>
+        page = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · Sattva Books</title><style>{CSS}
+main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%}}h1{{font-size:clamp(2rem,6vw,2.75rem);line-height:1.06}}label{{display:block;font-size:14px;font-weight:650;margin:28px 0 8px}}input[type=password]{{width:100%;font:400 17px var(--sans);padding:12px 13px;border:1px solid #a9bdd6;border-radius:2px}}.sign-in{{width:100%;margin-top:18px}}.login-message{{font-size:14px;line-height:1.5;color:#a12727;min-height:25px}}.privacy{{color:var(--slate);font-size:13px;line-height:1.6;margin-top:26px}}</style></head><body>
+{leakage_app.books_header()}<main><div class="eyebrow">Sattva Books · owner access</div><h1>Sign in to Books.</h1><p class="lede">Vendor bills, Zoho checks and the leakage ledger.</p><p class="login-message" role="alert">{esc(message)}</p>
 <form method="post" action="/login"><input type="hidden" name="csrf" value="{esc(token)}"><input type="hidden" name="next" value="{esc(self.safe_next(destination))}"><label for="password">Owner password</label><input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required><button class="sign-in" type="submit">Sign in</button></form><p class="privacy">For Sattva's owner only. Signing in opens the private review inbox; it does not approve or post a bill. You'll be asked to sign in again after 30 minutes away.</p></main><script>document.querySelector('form').addEventListener('submit',()=>{{const b=document.querySelector('button');b.disabled=true;b.textContent='Signing in…';}});</script></body></html>'''
         self.reply(code,page.encode(),'text/html; charset=utf-8',{'Set-Cookie':self.auth_cookie(self.server.login_cookie,token,600)})
 

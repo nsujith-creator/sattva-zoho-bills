@@ -19,6 +19,7 @@ from urllib.parse import unquote, urlsplit
 from urllib.parse import parse_qs, quote
 from auth import OwnerSessions, cookie_value
 from automation import Engine, Hold, MAX_PDF as AUTOMATIC_MAX_PDF, enabled as automation_enabled, render_status
+import leakage_app
 
 MAX_PDF = 12 * 1024 * 1024
 PAGE_SIZE = 100
@@ -153,7 +154,7 @@ def template(rows, csrf, total=None, page=1, pages=1, automation=None):
     max_mb = '5' if automation else '12'
     upload_js = JS.replace('__MAX_PDF__', str(maximum)).replace('__MAX_MB__', max_mb)
     return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf-token" content="{html.escape(csrf, quote=True)}"><title>Sattva · Bills Review</title><style>{CSS}</style></head><body>
-<header><div class="brand">SATTVA <span>Bills</span></div><div class="mode">{mode}</div></header>
+<header><div class="brand">SATTVA <span>Bills</span></div><div class="mode"><a href="/leakage" style="color:var(--accent);margin-right:18px;text-transform:none;letter-spacing:0;font-size:13px">Leakage ledger</a>{mode}</div></header>
 <main><div class="eyebrow">INVOICE CONTROL</div><h1>Every bill,<br>accounted for.</h1>
 <p class="lede">{intro}</p>{warning}
 <div class="upload"><div><strong>Drop a supplier invoice here</strong><div class="hint">PDF only · Maximum {max_mb} MB · Stored privately on the server</div></div><div><input id="pdf" type="file" accept=".pdf,application/pdf" aria-label="Select PDF invoice"><button id="upload-btn" type="button">Choose PDF</button></div></div><div id="message" role="status" aria-live="polite"></div>
@@ -172,6 +173,9 @@ class Server(ThreadingHTTPServer):
         self.automation = Engine(db) if automation_enabled() else None
         if self.automation:
             self.automation.start()
+        self.leakage = leakage_app.Monitor(db, Path(db).parent) if leakage_app.env_enabled() else None
+        if self.leakage:
+            self.leakage.start()
         if local_http and addr[0] != '127.0.0.1':
             raise ValueError('Insecure cookies require loopback binding.')
         self.auth = OwnerSessions(password)
@@ -182,6 +186,8 @@ class Server(ThreadingHTTPServer):
     def server_close(self):
         if self.automation:
             self.automation.close()
+        if self.leakage:
+            self.leakage.close()
         super().server_close()
 
 
@@ -207,7 +213,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Referrer-Policy', 'no-referrer')
         self.send_header('X-Frame-Options', 'DENY')
-        self.send_header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+        self.send_header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
         if not self.server.local_http:
             self.send_header('Strict-Transport-Security', 'max-age=31536000')
         if headers:
@@ -229,9 +235,9 @@ class Handler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             if self.command == 'GET' and not path.startswith('/api/'):
                 self.reply(303, headers={'Location':'/login?next='+quote(self.safe_next(self.path),safe='')})
-            elif self.command == 'POST' and (path == '/logout' or path.startswith(('/api/retry/', '/api/bank-debit/', '/api/reread/'))):
+            elif self.command == 'POST' and (path == '/logout' or path.startswith(('/api/retry/', '/api/bank-debit/', '/api/reread/', '/leakage/'))):
                 # Browser form buttons: return to sign-in, then to the same invoice page.
-                back = '/review/'+path.rsplit('/', 1)[1] if path.startswith('/api/') else '/'
+                back = '/leakage' if path.startswith('/leakage/') else '/review/'+path.rsplit('/', 1)[1] if path.startswith('/api/') else '/'
                 self.reply(303, headers={'Location':'/login?next='+quote(self.safe_next(back),safe='')})
             else:
                 self.err(401, 'Your session has ended. Sign in again; saved invoices and drafts are unchanged.')
@@ -242,7 +248,7 @@ class Handler(BaseHTTPRequestHandler):
     def safe_next(value):
         import re
         path = urlsplit(value or '/').path
-        return path if path == '/' or re.fullmatch(r'/(?:review|invoice)/[0-9a-f]{32}', path) else '/'
+        return path if path in ('/', '/leakage') or re.fullmatch(r'/(?:review|invoice)/[0-9a-f]{32}', path) else '/'
 
     def auth_cookie(self, name, value, max_age):
         return name+'='+value+'; Path=/; HttpOnly; SameSite=Strict; Max-Age='+str(max_age)+('' if self.server.local_http else '; Secure')
@@ -305,6 +311,47 @@ main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%
         self.server.auth.logout(cookie_value(self.headers.get('Cookie',''),self.server.session_cookie))
         self.reply(303,headers={'Location':'/login','Set-Cookie':self.auth_cookie(self.server.session_cookie,'',0)})
 
+    LEAKAGE_FLASH = {'started': ('Checking Zoho now. This takes a few minutes.', False), 'busy': ('A check is already running.', False),
+                     'saved': ('Decision saved. It applies from the next check.', False), 'undone': ('Decision undone. It applies from the next check.', False),
+                     'off': ('Zoho read access is not configured on this server.', True)}
+
+    def leakage_page(self, message='', bad=False, code=200):
+        monitor = self.server.leakage
+        query = parse_qs(urlsplit(self.path).query)
+        if not message and query.get('m', [''])[0] in self.LEAKAGE_FLASH:
+            message, bad = self.LEAKAGE_FLASH[query['m'][0]]
+        if not monitor:
+            body = leakage_app.page(None, None, None, [], [], self.session['csrf'], flash=message or self.LEAKAGE_FLASH['off'][0], flash_bad=True, enabled=False)
+        else:
+            report, started, email_status = monitor.latest_report()
+            body = leakage_app.page(report, started, email_status, monitor.runs(), monitor.decision_rows(), self.session['csrf'],
+                                    running=monitor.running(), flash=message, flash_bad=bad, daily_hour=monitor.daily_hour())
+        self.reply(code, body.encode(), 'text/html; charset=utf-8')
+
+    def leakage_post(self, path):
+        form = self.auth_form()
+        if form is None:
+            return
+        if not secrets.compare_digest(form.get('csrf', ''), self.session['csrf']):
+            self.err(403, 'Form token missing. Refresh and try again.'); return
+        monitor = self.server.leakage
+        if not monitor:
+            self.reply(303, headers={'Location': '/leakage?m=off'}); return
+        if path == '/leakage/run':
+            self.reply(303, headers={'Location': '/leakage?m='+('started' if monitor.run_now() else 'busy')}); return
+        match = re.fullmatch(r'/leakage/decide/(write_off|settled|overhead|link|accept_loss)', path)
+        if match:
+            try:
+                monitor.decide(match.group(1), form)
+            except ValueError as exc:
+                self.leakage_page(str(exc), True, 400); return
+            self.reply(303, headers={'Location': '/leakage?m=saved'}); return
+        match = re.fullmatch(r'/leakage/revoke/([0-9]{1,12})', path)
+        if match:
+            monitor.revoke(match.group(1))
+            self.reply(303, headers={'Location': '/leakage?m=undone'}); return
+        self.err(404, 'Endpoint not found')
+
     def do_GET(self):
         path = urlsplit(self.path).path
         if path == '/healthz':
@@ -314,6 +361,19 @@ main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%
         if path == '/favicon.ico':
             self.reply(204)
             return
+        if path.startswith('/static/'):
+            name = path.removeprefix('/static/')
+            kind = leakage_app.STATIC_FILES.get(name)
+            if not kind:
+                self.err(404, 'Not found'); return
+            data = (leakage_app.STATIC/name).read_bytes()
+            self.send_response(200)
+            for k, v in (('Content-Type', kind), ('Content-Length', str(len(data))), ('Cache-Control', 'public, max-age=604800, immutable'),
+                         ('X-Content-Type-Options', 'nosniff'), ('Cross-Origin-Resource-Policy', 'same-origin')):
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if not self.server.local_http and self.headers.get('X-Forwarded-Proto','').lower() != 'https':
             self.err(403,'Use the secure HTTPS address to sign in.');return
         if path == '/login':
@@ -321,6 +381,9 @@ main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%
             self.login_page(destination=destination)
             return
         if not self.guard():
+            return
+        if path == '/leakage':
+            self.leakage_page()
             return
         if path == '/':
             try:
@@ -471,6 +534,9 @@ main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%
             return
         if path == '/logout':
             self.logout_submit()
+            return
+        if path.startswith('/leakage/'):
+            self.leakage_post(path)
             return
         if path.startswith('/api/bank-debit/'):
             doc_id = path.removeprefix('/api/bank-debit/')

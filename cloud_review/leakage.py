@@ -404,7 +404,7 @@ def load_decisions(path):
 
 
 def bill_rec(bill, today):
-    return {'bill_id': str(bill['bill_id']), 'bill_number': bill.get('bill_number'), 'vendor': bill.get('vendor_name'),
+    return {'bill_id': str(bill['bill_id']), 'bill_number': bill.get('bill_number'), 'vendor': bill.get('vendor_name'), 'vendor_id': str(bill.get('vendor_id', '')),
             'date': bill.get('date'), 'reference_number': bill.get('reference_number'), 'status': bill.get('status'),
             'cost_inr': q(bill_cost(bill)), 'vendor_credits_applied': str(bill.get('vendor_credits_applied') or 0),
             'payment_made': str(bill.get('payment_made', '')), 'currency': bill.get('currency_code', 'INR'), 'total': str(bill.get('total')),
@@ -451,8 +451,13 @@ def reconcile(evidence, today, decisions=None, incomplete_reasons=(), since=FY_S
     over_bills = {str(o['bill_id']): o['reason'] for o in overhead if o.get('bill_id')}
     over_vendors = {str(o['vendor_id']): o['reason'] for o in overhead if o.get('vendor_id')}
     owner_links = {}
+    by_number = {norm(i.get('invoice_number')): iid for iid, i in invoices.items()}
     for link in links:
-        owner_links.setdefault(str(link.get('bill_id')), set()).add(str(link.get('invoice_id')))
+        target = str(link.get('invoice_id') or by_number.get(norm(link.get('invoice_number')), ''))
+        if target in invoices:
+            owner_links.setdefault(str(link.get('bill_id')), set()).add(target)
+        else:
+            issue(potential, 'owner link to unknown invoice', 0, 'Linked invoice '+str(link.get('invoice_number') or link.get('invoice_id'))+' was not found in Zoho.', decision=link)
 
     # Possible duplicate vendor bills double-count cost.
     seen = {}

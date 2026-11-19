@@ -341,13 +341,35 @@ def rate(doc):
     return r if r > 0 else Decimal(1)
 
 
-def bill_cost(bill):
+def bill_gross_cost(bill):
     return sum((dec(l.get('item_total')) for l in bill.get('line_items') or []), Decimal(0))*rate(bill)
+
+
+def bill_cost(bill):
+    """Pre-GST cost net of vendor credits applied to the bill (credit split pro rata to pre-GST).
+
+    Live data, 20 Nov 2026: a vendor's credit note cancelling a wrong invoice was applied in
+    Zoho to the re-issued bill; ignoring credits double-counted the shipment cost."""
+    gross, total = bill_gross_cost(bill), dec(bill.get('total'))
+    credit = dec(bill.get('vendor_credits_applied'))
+    if credit > 0 and total > 0:
+        gross -= min(credit, total)*gross/total
+    return gross
 
 
 def paid_fraction(doc):
     total = dec(doc.get('total'))
     return (total-dec(doc.get('balance')))/total if total > 0 else Decimal(0)
+
+
+def cash_paid_fraction(bill):
+    """Share of a vendor bill settled in cash; a vendor credit clears the balance but is not a payment."""
+    total = dec(bill.get('total'))
+    if total <= 0:
+        return Decimal(0)
+    if bill.get('payment_made') not in (None, ''):
+        return min(dec(bill['payment_made']), total)/total
+    return max(Decimal(0), total-dec(bill.get('balance'))-dec(bill.get('vendor_credits_applied')))/total
 
 
 def q(value):
@@ -378,7 +400,8 @@ def load_decisions(path):
 def bill_rec(bill, today):
     return {'bill_id': str(bill['bill_id']), 'bill_number': bill.get('bill_number'), 'vendor': bill.get('vendor_name'),
             'date': bill.get('date'), 'reference_number': bill.get('reference_number'), 'status': bill.get('status'),
-            'cost_inr': q(bill_cost(bill)), 'currency': bill.get('currency_code', 'INR'), 'total': str(bill.get('total')),
+            'cost_inr': q(bill_cost(bill)), 'vendor_credits_applied': str(bill.get('vendor_credits_applied') or 0),
+            'payment_made': str(bill.get('payment_made', '')), 'currency': bill.get('currency_code', 'INR'), 'total': str(bill.get('total')),
             'balance': str(bill.get('balance')), 'age_days': days(today, bill.get('date'))}
 
 
@@ -445,7 +468,9 @@ def reconcile(evidence, today, decisions=None, incomplete_reasons=(), since=FY_S
                 a, c = group[x], group[y]
                 pair = (str(a['bill_id']), str(c['bill_id']))
                 lines = lambda d: sorted(norm(l.get('description') or l.get('name')) for l in d.get('line_items') or [])
-                if pair not in flagged and lines(a) == lines(c) and norm(a.get('bill_number')) != norm(c.get('bill_number')):
+                credited = dec(a.get('vendor_credits_applied'))+dec(c.get('vendor_credits_applied'))
+                cancelled = credited >= min(dec(a.get('total')), dec(c.get('total')))-TOLERANCE
+                if pair not in flagged and not cancelled and lines(a) == lines(c) and norm(a.get('bill_number')) != norm(c.get('bill_number')):
                     flagged.add(pair)
                     issue(potential, 'possible re-issued vendor bill booked twice', min(bill_cost(a), bill_cost(c)),
                           'Same vendor and shipment key '+key+' with identical line items under different bill numbers: '
@@ -622,7 +647,7 @@ def reconcile(evidence, today, decisions=None, incomplete_reasons=(), since=FY_S
         elif late_aged:
             issue(potential, 'late cost while margin still positive', late_cost, 'Vendor cost dated after the last invoice; margin remains positive.', **common)
 
-        vendor_paid = sum((bill_cost(b)*paid_fraction(b) for b in sbills), Decimal(0))
+        vendor_paid = sum((bill_gross_cost(b)*cash_paid_fraction(b) for b in sbills), Decimal(0))
         # A credit note applied to an invoice clears its balance but is not cash from the customer.
         received = sum((dec(i.get('sub_total'))*rate(i)*paid_fraction(i) for i in billed), Decimal(0))
         received = max(Decimal(0), received-sum((dec(cn.get('sub_total'))*rate(cn) for cn in tied), Decimal(0)))
@@ -634,6 +659,20 @@ def reconcile(evidence, today, decisions=None, incomplete_reasons=(), since=FY_S
         elif past_due:
             issue(potential, 'overdue receivable (vendor not yet paid)', sum((dec(i.get('balance'))*rate(i) for i in past_due), Decimal(0)),
                   'Customer invoice past due.', **common)
+
+    # Unused vendor credit: money the vendor owes back (e.g. an overpayment against a cancelled bill).
+    unused = {}
+    for b in bills.values():
+        amt = dec(b.get('unused_credits_payable_amount'))
+        vid, seen_b = str(b.get('vendor_id')), unused.get(str(b.get('vendor_id')), (None, None))[1]
+        # Vendor-level figure: trust the most recently modified bill (cached bills can be older).
+        if seen_b is None or str(b.get('last_modified_time', '')) > str(seen_b.get('last_modified_time', '')):
+            unused[vid] = (amt, b)
+    unused = {v: x for v, x in unused.items() if x[0] > TOLERANCE}
+    for vendor, (amt, b) in sorted(unused.items()):
+        issue(potential, 'unused vendor credit (vendor owes us)', amt,
+              str(b.get('vendor_name'))+' holds an unapplied credit (as of bill '+str(b.get('bill_number'))+', modified '+str(b.get('last_modified_time', ''))[:10]+'). '
+              'It may be an advance or overpayment not yet applied to open bills, or money owed back: verify in Zoho.', bills=[b])
 
     # Billing with no recorded vendor cost: not leakage, but the shipment's cost evidence is missing.
     for iid, inv in sorted(invoices.items()):

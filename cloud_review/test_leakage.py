@@ -203,6 +203,25 @@ class Cases(unittest.TestCase):
         self.assertEqual(types(r, 'potential_issues'), ['invoice with no vendor cost recorded'])
         self.assertEqual(r['totals_inr']['potential'], '0.00')
 
+    def test_vendor_credit_cancelling_wrong_bill_is_not_double_cost(self):
+        # Wrong bill A paid in cash; vendor credit note fully applied to corrected bill B.
+        a = bill('1', number='A1', amount='10000', total='11800', payment_made=11800)
+        b = bill('2', number='A2', amount='9900', total='11682', d='2026-10-04', vendor_credits_applied=11682, payment_made=0)
+        r = L.reconcile(evidence([a, b], [invoice('9', amount='10500')]), TODAY)
+        self.assertEqual(r['confirmed_leakage'], [])
+        self.assertNotIn('possible re-issued vendor bill booked twice', types(r, 'potential_issues'))
+
+    def test_credit_settled_bill_is_not_vendor_cash(self):
+        b = bill('1', vendor_credits_applied=11800, payment_made=0)
+        r = L.reconcile(evidence([b], [invoice('9', status='overdue', balance='14160')]), TODAY)
+        self.assertNotIn('UNRECOVERED VENDOR PAYMENT', types(r, 'confirmed_leakage'))
+
+    def test_unused_vendor_credit_reported_once_per_vendor(self):
+        r = L.reconcile(evidence([bill('1', unused_credits_payable_amount=2345.52), bill('2', ref='MSCU1111111111', unused_credits_payable_amount=2345.52)],
+                                 [invoice('9'), invoice('8', text='MSCU1111111111')]), TODAY)
+        self.assertEqual(types(r, 'potential_issues'), ['unused vendor credit (vendor owes us)'])
+        self.assertEqual(r['potential_issues'][0]['exposure_inr'], '2345.52')
+
     def test_invoice_matching_two_shipments_is_uncertain(self):
         r = L.reconcile(evidence([bill('1', ref='OOLU2712345678'), bill('2', ref='MSCU1111111111')],
                                  [invoice('9', text='OOLU2712345678 and MSCU1111111111')]), TODAY)

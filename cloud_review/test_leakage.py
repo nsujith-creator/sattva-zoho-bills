@@ -222,6 +222,19 @@ class Cases(unittest.TestCase):
         self.assertEqual(types(r, 'potential_issues'), ['unused vendor credit (vendor owes us)'])
         self.assertEqual(r['potential_issues'][0]['exposure_inr'], '2345.52')
 
+    def test_write_off_moves_unbilled_to_accepted_with_reason(self):
+        ev = evidence([bill('1', d='2026-10-01')])
+        r = L.reconcile(ev, TODAY, {'write_offs': [{'bill_id': '1', 'reason': 'Spot booking no-show fee'}]})
+        self.assertEqual((types(r, 'confirmed_leakage'), types(r, 'accepted_losses')), ([], ['written off (unbilled)']))
+        r = L.reconcile(ev, TODAY, {'write_offs': [{'bill_id': '1'}]})
+        self.assertEqual(types(r, 'confirmed_leakage'), ['UNBILLED'])
+
+    def test_owner_settled_receivable_is_books_issue_not_leakage(self):
+        ev = evidence([bill('1', balance='0')], [invoice('9', status='overdue', balance='14160')])
+        r = L.reconcile(ev, TODAY, {'receivable_settled': [{'invoice_id': '9', 'reason': 'Adjusted against customer advance'}]})
+        self.assertEqual(r['confirmed_leakage'], [])
+        self.assertEqual(types(r, 'potential_issues'), ['books: receivable settled per owner, still open in Zoho'])
+
     def test_invoice_matching_two_shipments_is_uncertain(self):
         r = L.reconcile(evidence([bill('1', ref='OOLU2712345678'), bill('2', ref='MSCU1111111111')],
                                  [invoice('9', text='OOLU2712345678 and MSCU1111111111')]), TODAY)
@@ -253,7 +266,7 @@ class Cases(unittest.TestCase):
     def test_accepted_loss_bound_to_fingerprint(self):
         ev = evidence([bill('1', d='2026-10-05')], [invoice('9', amount='9000', d='2026-10-06')])
         fp = L.reconcile(ev, TODAY)['potential_issues'][0]['fingerprint']
-        decisions = {'links': [], 'overhead': [], 'accepted_losses': [{'fingerprint': fp, 'reason': 'Rate war', 'shipment_keys': ['OOLU2712345678']}]}
+        decisions = {'accepted_losses': [{'fingerprint': fp, 'reason': 'Rate war', 'shipment_keys': ['OOLU2712345678']}]}
         self.assertEqual(types(L.reconcile(ev, TODAY, decisions), 'accepted_losses'), ['accepted commercial loss'])
         ev['invoices']['9']['sub_total'] = '8000'  # record changed -> decision re-opens
         r = L.reconcile(ev, TODAY, decisions)

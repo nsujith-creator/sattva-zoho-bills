@@ -390,11 +390,17 @@ def is_overhead_vendor(name):
     return bool(words) and (words[0] in SOFTWARE_VENDORS or words[0] in ADVERTISING_VENDORS or words[:2] == ['GOOGLE', 'INDIA'])
 
 
+# write_offs: unbilled vendor bills the owner writes off (bill_id + reason).
+# receivable_settled: customer invoices the owner states are settled outside Zoho (invoice_id + reason);
+# the books still need correcting, so they stay listed as a books issue, never silently cleared.
+DECISION_KEYS = ('links', 'overhead', 'accepted_losses', 'write_offs', 'receivable_settled')
+
+
 def load_decisions(path):
     if not path or not Path(path).exists():
-        return {'links': [], 'overhead': [], 'accepted_losses': []}
+        return {k: [] for k in DECISION_KEYS}
     data = json.loads(Path(path).read_text())
-    return {k: list(data.get(k) or []) for k in ('links', 'overhead', 'accepted_losses')}
+    return {k: list(data.get(k) or []) for k in DECISION_KEYS}
 
 
 def bill_rec(bill, today):
@@ -413,7 +419,7 @@ def inv_rec(inv):
 
 
 def reconcile(evidence, today, decisions=None, incomplete_reasons=(), since=FY_START):
-    decisions = decisions or {'links': [], 'overhead': [], 'accepted_losses': []}
+    decisions = {k: list((decisions or {}).get(k) or []) for k in DECISION_KEYS}
     confirmed, potential, accepted, excluded, notes = [], [], [], [], []
 
     def issue(bucket, kind, exposure, detail, bills=(), invoices=(), keys=(), **extra):
@@ -440,6 +446,8 @@ def reconcile(evidence, today, decisions=None, incomplete_reasons=(), since=FY_S
     links = reasoned(decisions['links'], 'link')
     overhead = reasoned(decisions['overhead'], 'overhead')
     losses = reasoned(decisions['accepted_losses'], 'accepted-loss')
+    written_off = {str(w['bill_id']): w['reason'] for w in reasoned(decisions['write_offs'], 'write-off') if w.get('bill_id')}
+    settled = {str(x['invoice_id']): x['reason'] for x in reasoned(decisions['receivable_settled'], 'receivable-settled') if x.get('invoice_id')}
     over_bills = {str(o['bill_id']): o['reason'] for o in overhead if o.get('bill_id')}
     over_vendors = {str(o['vendor_id']): o['reason'] for o in overhead if o.get('vendor_id')}
     owner_links = {}
@@ -610,6 +618,8 @@ def reconcile(evidence, today, decisions=None, incomplete_reasons=(), since=FY_S
                 common['invoices'] = [invoices[i] for i in sorted(close)]
                 issue(potential, 'uncertain near match', cost, 'No exact invoice; near key match(es) need owner confirmation.',
                       near_matches={i: sorted(v) for i, v in close.items()}, **common)
+            elif all(str(b['bill_id']) in written_off for b in sbills):
+                issue(accepted, 'written off (unbilled)', cost, 'Owner: '+'; '.join(sorted({written_off[str(b['bill_id'])] for b in sbills})), **common)
             elif age >= LEAK_DAYS:
                 issue(confirmed, 'UNBILLED', cost, 'Shipment cost with valid key and no customer invoice after '+str(age)+' days.', **common)
             else:
@@ -653,6 +663,13 @@ def reconcile(evidence, today, decisions=None, incomplete_reasons=(), since=FY_S
         received = max(Decimal(0), received-sum((dec(cn.get('sub_total'))*rate(cn) for cn in tied), Decimal(0)))
         past_due = [i for i in billed if dec(i.get('balance')) > 0 and (str(i.get('status')).lower() == 'overdue' or
                     (i.get('due_date') and str(i['due_date']) < str(today)))]
+        owner_settled = [i for i in past_due if str(i['invoice_id']) in settled]
+        if owner_settled:
+            issue(potential, 'books: receivable settled per owner, still open in Zoho',
+                  sum((dec(i.get('balance'))*rate(i) for i in owner_settled), Decimal(0)),
+                  'Owner: '+'; '.join(sorted({settled[str(i['invoice_id'])] for i in owner_settled}))+
+                  '. Not leakage; Zoho still shows the balance, so the books need the settlement recorded.', **common)
+            past_due = [i for i in past_due if i not in owner_settled]
         if past_due and vendor_paid-received > TOLERANCE:
             issue(confirmed, 'UNRECOVERED VENDOR PAYMENT', vendor_paid-received,
                   'Vendor paid '+q(vendor_paid)+' vs customer received '+q(received)+'; invoice past due.', **common)

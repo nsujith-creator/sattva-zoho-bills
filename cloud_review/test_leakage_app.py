@@ -60,6 +60,36 @@ class MonitorTests(unittest.TestCase):
         m.run('manual')
         self.assertEqual([i['type'] for i in m.latest_report()[0]['confirmed_leakage']], ['UNBILLED'])
 
+    def test_decision_applies_at_once_without_reading_zoho(self):
+        calls = []
+        docs = evidence([bill('1', d='2026-10-01')])
+        def factory():
+            calls.append(1)
+            return L.ReadOnlyZoho(CONFIG, transport=FakeZoho(docs), token_source=lambda c: 't', pace=0)
+        m = monitor(self.tmp.name, factory=factory)
+        self.assertFalse(m.reapply())  # nothing read yet
+        m.run('manual')
+        m.decide('write_off', {'ids': '1', 'reason': 'No-show fee, absorbed'})
+        self.assertTrue(m.reapply())
+        report = m.latest_report()[0]
+        self.assertEqual((report['confirmed_leakage'], len(calls)), ([], 1))
+        self.assertEqual([i['type'] for i in report['accepted_losses']], ['written off (unbilled)'])
+        self.assertEqual(m.runs(1)[0][1], 'decision')
+        self.assertIsNone(m.previous_report())  # a re-apply is not a new Zoho read
+        out = A.page(report, m.latest_report()[1], m.latest_report()[2], m.runs(), m.decision_rows(), 'c')
+        self.assertIn('decisions applied', out)
+        with m.lock:
+            self.assertFalse(m.reapply())  # a full check in progress picks decisions up itself
+
+    def test_email_failure_reports_status_and_body(self):
+        import io, urllib.error
+        env = {'RESEND_API_KEY': 'k', 'LEAKAGE_EMAIL_TO': 'owner@example.com', 'LEAKAGE_EMAIL_FROM': 'books@example.com'}
+        def boom(*a):
+            raise urllib.error.HTTPError('https://api.resend.com/emails', 403, 'Forbidden', {}, io.BytesIO(b'{"message": "domain not verified"}'))
+        m = monitor(self.tmp.name, env=env, sender=boom)
+        m.run('manual')
+        self.assertEqual(m.latest_report()[2], 'failed: HTTP 403 {"message": "domain not verified"}')
+
     def test_link_by_invoice_number(self):
         docs = evidence([bill('1', ref='')], [invoice('9', text='no key')])
         m = monitor(self.tmp.name, docs)

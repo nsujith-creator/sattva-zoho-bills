@@ -309,6 +309,8 @@ main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%
 
     LEAKAGE_FLASH = {'started': ('Checking Zoho now. This takes a few minutes.', False), 'busy': ('A check is already running.', False),
                      'saved': ('Decision saved. It applies from the next check.', False), 'undone': ('Decision undone. It applies from the next check.', False),
+                     'applied': ('Decision saved and applied. The list below already reflects it.', False),
+                     'undone_applied': ('Decision undone. The item is back in the list.', False),
                      'off': ('Zoho read access is not configured on this server.', True)}
 
     def leakage_page(self, message='', bad=False, code=200):
@@ -342,11 +344,11 @@ main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%
                 monitor.decide(match.group(1), form)
             except ValueError as exc:
                 self.leakage_page(str(exc), True, 400); return
-            self.reply(303, headers={'Location': '/leakage?m=saved'}); return
+            self.reply(303, headers={'Location': '/leakage?m='+('applied' if monitor.reapply() else 'saved')}); return
         match = re.fullmatch(r'/leakage/revoke/([0-9]{1,12})', path)
         if match:
             monitor.revoke(match.group(1))
-            self.reply(303, headers={'Location': '/leakage?m=undone'}); return
+            self.reply(303, headers={'Location': '/leakage?m='+('undone_applied' if monitor.reapply() else 'undone')}); return
         self.err(404, 'Endpoint not found')
 
     def do_GET(self):

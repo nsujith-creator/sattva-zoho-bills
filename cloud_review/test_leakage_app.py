@@ -142,6 +142,45 @@ class PageTests(unittest.TestCase):
         self.assertNotIn('books.zoho.in', bare)
         self.assertEqual(A.zoho_link('60012345', 'bills', '1"><script>', 'x'), 'x')
 
+    def test_filter_bar_has_a_chip_per_type_and_rows_carry_filter_data(self):
+        with tempfile.TemporaryDirectory() as d:
+            m = monitor(d, evidence([bill('1', d='2026-10-01', vendor='Maersk <India>')]))
+            m.run('manual')
+            report, started, email = m.latest_report()
+            out = A.page(report, started, email, m.runs(), m.decision_rows(), 'c')
+        self.assertIn('data-f="UNBILLED"', out)
+        self.assertIn('data-type="UNBILLED" data-amt="10000.00" data-date="2026-10-01"', out)
+        self.assertIn('maersk &lt;india&gt;', out)  # search text is escaped
+        self.assertIn('1 Oct 2026', out)
+        self.assertLess(out.index('id="decide"'), out.index("getElementById('filters')"))  # script runs after the lists
+
+    def test_new_since_last_check_bulk_data_party_and_age(self):
+        with tempfile.TemporaryDirectory() as d:
+            clock = {'t': datetime(2026, 11, 20, 9, 0, tzinfo=IST)}
+            docs = evidence([bill('1', d='2026-10-01')])
+            m = monitor(d, docs, now=lambda: clock['t'])
+            m.run('manual')
+            self.assertIsNone(m.previous_report())
+            docs['bills']['2'] = dict(bill('2', d='2026-10-02', ref='MBL: MSCU1234567890'))
+            m.run('manual')
+            report, started, email = m.latest_report()
+            prev = m.previous_report()
+            self.assertEqual(len(prev['confirmed_leakage']), 1)
+            out = A.page(report, started, email, m.runs(), m.decision_rows(), 'c', previous=prev)
+        rows = re.findall(r'<li data-type="UNBILLED"[^>]*>', out)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(sum('data-new="1"' in r for r in rows), 1)
+        self.assertIn('data-new="1"', out); self.assertIn('class="newtag"', out)
+        self.assertIn('data-acts="write_off" data-bills="2"', out)
+        self.assertIn('data-kind="decide"', out)
+        self.assertIn('at risk · 49 days', out)  # 20 Nov report vs 2 Oct bill
+        self.assertIn('id="bulk"', out); self.assertIn('data-new="1" aria-pressed', out)
+
+    def test_bulk_write_off_stores_every_bill(self):
+        with tempfile.TemporaryDirectory() as d:
+            m = monitor(d)
+            self.assertEqual(m.decide('write_off', {'ids': '11,12,13', 'reason': 'Maersk no-show fees, absorbed'}), 3)
+
     def test_incomplete_is_never_presented_as_clean(self):
         report = A.Monitor._failed_report(datetime(2026, 11, 20, tzinfo=IST), 'Zoho HTTP 503')
         out = A.page(report, '2026-11-20T08:00:00+05:30', 'not configured', [], [], 'c')

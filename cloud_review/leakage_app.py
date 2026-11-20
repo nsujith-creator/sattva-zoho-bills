@@ -223,6 +223,16 @@ class Monitor:
                              "ORDER BY id DESC LIMIT 1").fetchone()
         return (json.loads(row[0]), row[1], row[2]) if row else (None, None, None)
 
+    def previous_report(self):
+        """The last complete report before the latest one, for "new since last check"."""
+        with connect(self.db_path) as db:
+            rows = db.execute("SELECT report_json FROM leakage_runs WHERE report_json IS NOT NULL ORDER BY id DESC LIMIT 20").fetchall()
+        for (raw,) in rows[1:]:
+            report = json.loads(raw)
+            if report.get('status') == 'COMPLETE':
+                return report
+        return None
+
     # ---------------------------------------------------------- decisions
     def decisions(self):
         out = {k: [] for k in L.DECISION_KEYS}
@@ -407,6 +417,45 @@ h1 .money{color:#ff6b5e}h1 .calm{color:#7fd3a8}
 .strip div{padding:16px 24px;border-left:1px solid rgba(255,255,255,.22)}.strip div:first-child{border-left:0;padding-left:0}
 .strip b{display:block;font-size:clamp(20px,2vw,26px);font-weight:700;letter-spacing:-.03em;line-height:1.1}
 .strip span{font-size:13px;color:rgba(255,255,255,.8)}
+.filters{z-index:4;background:#fff;border-bottom:1px solid var(--line);padding:12px var(--pad) 8px;box-shadow:0 6px 18px -14px rgba(3,7,34,.35)}
+@media (min-width:1100px){.filters{position:sticky;top:88px}}
+.filters *{min-width:0}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{display:inline-flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;max-width:100%;text-align:left;border:1px solid var(--line);border-radius:2px;background:#fff;color:var(--ink);padding:6px 10px;font:500 13px/1.3 var(--sans);cursor:pointer}
+.chip .l{flex:0 1 auto;overflow-wrap:anywhere}.filters .chip .c,.filters .chip .s{flex:0 0 auto;min-width:auto}.chip .c{font:500 12px var(--mono);color:var(--slate)}.chip .s{font:500 12px var(--mono);color:var(--ink);white-space:nowrap}
+.chip.red{border-left:3px solid var(--loss)}.chip.red .s{color:#b71c1c}.chip.new{border-color:var(--electric);color:var(--blue)}
+.chip:hover{border-color:var(--electric)}.chip[aria-pressed=true]{background:var(--navy);border-color:var(--navy);color:#fff}.chip[aria-pressed=true] .c,.chip[aria-pressed=true] .s{color:var(--sky)}
+.frow{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px 12px;margin-top:10px}
+.frow label{display:flex;flex-direction:column;gap:3px;font:500 11px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--slate)}
+.frow .grow{flex:1 1 180px}.dates{display:flex;gap:8px}
+.frow input,.frow select{width:100%;font:400 14px var(--sans);color:var(--ink);border:1px solid var(--line);border-radius:2px;padding:6px 8px;background:#fff;min-height:36px;text-transform:none;letter-spacing:0}
+.frow input[type=date]{width:9.5em}
+.frow input:focus,.frow select:focus{outline:2px solid var(--electric);outline-offset:-1px}
+.seg{display:flex;border:1px solid var(--line);border-radius:2px;overflow:hidden}
+.seg button{border:0;border-left:1px solid var(--line);background:#fff;color:var(--ink);padding:0 10px;min-height:36px;font:500 12px var(--sans);cursor:pointer;white-space:nowrap}
+.seg button:first-child{border-left:0}.seg button[aria-pressed=true]{background:var(--blue);color:#fff}
+.fline{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin-top:8px;position:relative}
+.fsum{margin:0;font:500 12px var(--mono);color:var(--slate)}
+.pactive button{border:1px solid var(--navy);background:var(--navy);color:#fff;border-radius:2px;padding:3px 8px;font:500 12px var(--sans);cursor:pointer;max-width:100%;overflow-wrap:anywhere;text-align:left}
+.parties{margin-left:auto}.parties>summary{list-style:none;cursor:pointer;font:600 12px var(--sans);color:var(--blue);padding:4px 0}.parties>summary::-webkit-details-marker{display:none}
+.parties>summary::after{content:' ▾'}.parties[open]>summary::after{content:' ▴'}
+.plist{position:absolute;right:0;top:100%;z-index:6;list-style:none;margin:4px 0 0;padding:4px 0;width:min(380px,100%);max-height:min(420px,60vh);overflow-y:auto;background:#fff;border:1px solid var(--line);box-shadow:0 12px 30px -12px rgba(3,7,34,.35)}
+.plist button{display:flex;justify-content:space-between;gap:12px;width:100%;border:0;background:none;padding:8px 12px;text-align:left;font:400 13px var(--sans);color:var(--ink);cursor:pointer}
+.plist button:hover,.plist button[aria-pressed=true]{background:var(--pale)}.plist .pn{flex:1 1 auto;overflow-wrap:anywhere}.filters .plist .pv{flex:0 0 auto;min-width:auto}.plist .pv{font:500 12px var(--mono);white-space:nowrap;color:var(--slate)}
+.ledger .n{display:flex;flex-direction:column;align-items:flex-start;gap:6px}
+.pick{width:18px;height:18px;margin:2px 0 0;accent-color:var(--blue);cursor:pointer}
+.newtag{display:inline-block;margin-left:8px;padding:1px 6px;border-radius:2px;background:var(--electric);color:#fff;font:600 10px/1.6 var(--mono);letter-spacing:.06em;text-transform:uppercase;vertical-align:2px}
+.bulk{position:fixed;left:0;right:0;bottom:0;z-index:8;display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px 14px;padding:12px var(--pad);background:var(--navy);color:#fff;box-shadow:0 -10px 30px -12px rgba(3,7,34,.5)}
+.state .btn{white-space:nowrap}
+.bulk *{min-width:0}.bsum{margin:0 0 8px;font:600 14px var(--sans);white-space:nowrap}
+.breason{flex:1 1 260px;display:flex;flex-direction:column;gap:3px;font:500 11px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--sky)}
+.breason input{width:100%;font:400 14px var(--sans);border:0;border-radius:2px;padding:8px 10px;min-height:38px;color:var(--ink);text-transform:none;letter-spacing:0}
+.bacts{display:flex;flex-wrap:wrap;gap:8px}.bulk .btn{min-height:38px}.bulk .btn:not(.btn-quiet){background:#fff;color:var(--navy)}.bulk .btn:not(.btn-quiet):hover{background:var(--pale)}.bulk .btn-quiet{background:transparent;color:#fff;border-color:rgba(255,255,255,.4)}
+.bnote{flex-basis:100%;margin:0;font-size:12px;color:var(--sky)}.bnote:empty{display:none}
+body.picking{padding-bottom:180px}
+[hidden]{display:none!important}
+@media (max-width:640px){.frow>*{flex:1 1 100%}.perl,.sortl{flex:1 1 40%!important}.dates label{flex:1 1 0}.frow input[type=date]{width:100%}.seg button{flex:1 1 0;padding:0 6px}
+.parties{margin-left:0}.plist{left:0;right:auto}.bulk{padding:10px 16px}.bsum{flex-basis:100%;margin:0}}
 .section{display:grid;grid-template-columns:minmax(0,.62fr) minmax(0,1.38fr);gap:clamp(28px,5vw,72px);padding:clamp(34px,4vw,56px) var(--pad);border-top:1px solid var(--line)}
 .section.wash{background:var(--wash)}
 .section h2{margin:10px 0 0;font-size:clamp(1.35rem,2.1vw,1.9rem);line-height:1.08;letter-spacing:-.035em;font-weight:700}
@@ -463,7 +512,7 @@ a.zoho{color:var(--blue);font-weight:600;white-space:nowrap;text-decoration:none
 .foot b{color:#fff;font-weight:600}
 @media (max-width:980px){.section{grid-template-columns:minmax(0,1fr)}.strip{grid-template-columns:1fr 1fr}.strip div:nth-child(3){border-left:0;padding-left:0}.strip div{border-top:1px solid rgba(255,255,255,.18)}}
 @media (max-width:640px){.bucket>summary{grid-template-columns:minmax(0,1fr) auto;padding-left:22px}.bucket>summary::before{margin-left:-22px}.bcount{display:none}
-.ledger details>summary{grid-template-columns:minmax(0,1fr) auto;gap:12px;padding-left:12px}.ledger .n{display:none}.body{padding-left:12px}
+.ledger details>summary{grid-template-columns:18px minmax(0,1fr) auto;gap:10px;padding-left:10px}.ledger .nn{display:none}.body{padding-left:12px}
 .hero{grid-template-columns:minmax(0,1fr)}.state{align-items:flex-start;text-align:left}.ledger .amt{font-size:17px}
 .strip div{padding:12px 14px}.strip b{font-size:20px}.section .aside p{display:none}.section{gap:16px}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
@@ -575,23 +624,192 @@ def decision_forms(item, csrf, org=''):
     return '<div class="decide">'+''.join(out)+'</div>' if out else ''
 
 
-def ledger_row(n, item, csrf, confirmed=False, org=''):
+def day(iso):
+    try:
+        return datetime.strptime(iso[:10], '%Y-%m-%d').strftime('%-d %b %Y')
+    except ValueError:
+        return iso
+
+
+BULK_ACTIONS = ('write_off', 'settled', 'overhead')
+
+
+def item_key(item):
+    """Stable identity of a finding across runs: its type and the Zoho records behind it."""
+    return json.dumps([item.get('type'), sorted(str(b.get('bill_id')) for b in item.get('bills', [])),
+                       sorted(str(i.get('invoice_id')) for i in item.get('invoices', [])),
+                       '' if item.get('bills') or item.get('invoices') else str(item.get('detail', ''))])
+
+
+def report_keys(report):
+    if not report:
+        return None
+    return {item_key(i) for i in report.get('confirmed_leakage', [])+report.get('potential_issues', [])}
+
+
+def item_party(item):
+    """Who to talk to about it: the customer when there is an invoice, otherwise the vendor."""
+    for i in item.get('invoices', []):
+        if i.get('customer'):
+            return str(i['customer'])
+    for b in item.get('bills', []):
+        if b.get('vendor'):
+            return str(b['vendor'])
+    return ''
+
+
+def filter_bar(confirmed, potential, has_previous):
+    """Chips per finding type with count and amount, view, dates, search, sort, party rollup. Filtering runs in the browser."""
+    kinds, seen = [], set()
+    for it in confirmed+potential:
+        if it['type'] not in seen:
+            seen.add(it['type']); kinds.append(it['type'])
+    conf_types = {it['type'] for it in confirmed}
+    chip = lambda attr, label, cls: ('<button type="button" class="chip'+cls+'" '+attr+' aria-pressed="false">'
+                                     '<span class="l">'+esc(label)+'</span><span class="c"></span><span class="s"></span></button>')
+    chips = chip('data-f=""', 'All open', '')
+    if has_previous:
+        chips += chip('data-new="1"', 'New since last check', ' new')
+    chips += ''.join(chip('data-f="'+esc(k)+'"', PLAIN.get(k, k), ' red' if k in conf_types else '') for k in kinds)
+    view = ('<div class="seg" role="group" aria-label="Show"><button type="button" data-v="" aria-pressed="true">Everything</button>'
+            '<button type="button" data-v="decide" aria-pressed="false">Decide here</button><button type="button" data-v="fix" aria-pressed="false">Fix in Zoho</button></div>')
+    return ('<section class="filters" id="filters" aria-label="Filter findings"><div class="chips" role="group" aria-label="Finding type">'+chips+'</div>'
+            '<div class="frow">'+view+
+            '<label class="perl">Period<select name="per"><option value="">All dates</option><option value="m">This month</option>'
+            '<option value="lm">Last month</option><option value="90">Last 90 days</option><option value="fy">This financial year</option><option value="c">Custom range…</option></select></label>'
+            '<span class="dates" hidden><label>From<input type="date" name="from"></label><label>To<input type="date" name="to"></label></span>'
+            '<label class="grow">Search<input type="search" name="q" placeholder="MBL, bill or invoice no., vendor, customer" autocomplete="off" spellcheck="false"></label>'
+            '<label class="sortl">Sort<select name="sort"><option value="amt">Biggest first</option><option value="new">Newest first</option><option value="old">Oldest first</option></select></label></div>'
+            '<div class="fline"><p class="fsum" aria-live="polite"></p><span class="pactive" hidden></span>'
+            '<details class="parties"><summary>By party</summary><ol class="plist"></ol></details></div></section>')
+
+
+def bulk_bar(csrf):
+    return ('<form class="bulk" id="bulk" method="post" hidden><input type="hidden" name="csrf" value="'+esc(csrf)+'"><input type="hidden" name="ids">'
+            '<p class="bsum" aria-live="polite"></p><label class="breason">Reason<input type="text" name="reason" required minlength="3" maxlength="500" '
+            'placeholder="One reason for all selected, e.g. Spot booking no-show fees, absorbed"></label>'
+            '<span class="bacts"><button class="btn" type="submit" data-a="write_off">Write off</button><button class="btn" type="submit" data-a="settled">Mark settled</button>'
+            '<button class="btn" type="submit" data-a="overhead">Overhead</button><button class="btn btn-quiet" type="button" data-clear="1">Clear</button></span>'
+            '<p class="bnote"></p></form>')
+
+
+FILTER_JS = '''<script>(()=>{const bar=document.getElementById('filters');if(!bar)return;
+const items=[...document.querySelectorAll('#confirmed li[data-type],#decide li[data-type]')];
+const st={t:'',n:'',v:'',p:'',per:'',from:'',to:'',q:'',sort:'amt'};
+try{const h=new URLSearchParams(location.hash.slice(1));for(const k in st){if(h.has(k))st[k]=h.get(k)}}catch(e){}
+const inp=n=>bar.querySelector('[name='+n+']');
+const fmt=v=>v?'\\u20b9'+Math.round(v).toLocaleString('en-IN'):'\\u2014';
+const iso=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+const pass=(li,skip)=>{const q=st.q.trim().toLowerCase(),d=li.dataset.date,x=li.dataset;
+ return (skip==='t'||!st.t||x.type===st.t)&&(skip==='n'||!st.n||x.new==='1')&&(!st.v||x.kind===st.v)&&(skip==='p'||!st.p||x.party===st.p)
+  &&(!st.from||(d&&d>=st.from))&&(!st.to||(d&&d<=st.to))&&(!q||x.q.includes(q))};
+const cmp=(a,b)=>st.sort==='amt'?(+b.dataset.amt)-(+a.dataset.amt):
+ (st.sort==='new'?(b.dataset.date||'').localeCompare(a.dataset.date||''):(a.dataset.date||'~').localeCompare(b.dataset.date||'~'));
+const bulk=document.getElementById('bulk');
+function picks(){return items.filter(li=>{const c=li.querySelector('.pick');return c&&c.checked&&!li.hidden})}
+function syncBulk(){if(!bulk)return;const sel=picks();bulk.hidden=!sel.length;document.body.classList.toggle('picking',sel.length>0);if(!sel.length)return;
+ const acts=['write_off','settled','overhead'].filter(a=>sel.every(li=>(li.dataset.acts||'').split(' ').includes(a)));
+ bulk.querySelectorAll('[data-a]').forEach(b=>b.hidden=!acts.includes(b.dataset.a));
+ bulk.querySelector('.bsum').textContent=sel.length+' selected \\u00b7 '+fmt(sel.reduce((a,li)=>a+(+li.dataset.amt),0));
+ bulk.querySelector('.bnote').textContent=acts.length?'':'These items have no decision in common. Select items of one kind.'}
+function apply(){let n=0,sum=0;
+ items.forEach(li=>{const ok=pass(li);li.hidden=!ok;if(ok){n++;sum+=+li.dataset.amt}});
+ bar.querySelectorAll('.chip').forEach(b=>{const isNew='new' in b.dataset,t=b.dataset.f;let c=0,s=0;
+  items.forEach(li=>{if(isNew?(li.dataset.new==='1'&&pass(li,'n')):((!t||li.dataset.type===t)&&pass(li,'t'))){c++;s+=+li.dataset.amt}});
+  b.querySelector('.c').textContent=c;b.querySelector('.s').textContent=fmt(s);
+  const on=isNew?st.n==='1':(st.t===t&&!(t===''&&st.n));b.setAttribute('aria-pressed',String(on));b.hidden=!isNew&&!!t&&!c&&!on});
+ bar.querySelectorAll('[data-v]').forEach(b=>b.setAttribute('aria-pressed',String(st.v===b.dataset.v)));
+ const narrowed=!!(st.t||st.n||st.v||st.p||st.q||st.from||st.to);
+ document.querySelectorAll('#confirmed ol.ledger,#decide ol.ledger').forEach(ol=>{[...ol.children].sort(cmp).forEach(li=>ol.appendChild(li))});
+ document.querySelectorAll('#decide details.bucket').forEach(d=>{const vis=[...d.querySelectorAll('li[data-type]')].filter(li=>!li.hidden);
+  d.hidden=!vis.length;d.querySelector('.bcount').textContent=vis.length;d.querySelector('.btotal').textContent=fmt(vis.reduce((a,li)=>a+(+li.dataset.amt),0));
+  if(narrowed&&vis.length)d.open=true});
+ ['confirmed','decide'].forEach(id=>{const sec=document.getElementById(id);if(!sec)return;let i=0;
+  sec.querySelectorAll('li[data-type]').forEach(li=>{if(!li.hidden){const el=li.querySelector('.nn');if(el)el.textContent=String(++i).padStart(2,'0')}});
+  let e=sec.querySelector('.fempty');if(!e){e=document.createElement('p');e.className='empty fempty';e.textContent='Nothing here matches these filters.';(sec.querySelector('ol.ledger,.bucket,.empty')||sec.lastElementChild).parentNode.appendChild(e)}
+  e.hidden=!narrowed||i>0});
+ bar.querySelector('.fsum').textContent=(narrowed?'Showing '+n+' of '+items.length:items.length)+' open items \\u00b7 '+fmt(sum)+' exposure';
+ const pa=bar.querySelector('.pactive');pa.hidden=!st.p;pa.innerHTML='';if(st.p){const b=document.createElement('button');b.type='button';b.dataset.party='';b.textContent=st.p+'  \\u00d7';b.setAttribute('aria-label','Clear party filter '+st.p);pa.appendChild(b)}
+ const tot={};items.forEach(li=>{const p=li.dataset.party;if(p&&pass(li,'p')){(tot[p]=tot[p]||[0,0])[0]++;tot[p][1]+=+li.dataset.amt}});
+ bar.querySelector('.plist').innerHTML='';Object.entries(tot).sort((a,b)=>b[1][1]-a[1][1]).slice(0,15).forEach(([p,[c,s]])=>{
+  const li=document.createElement('li'),b=document.createElement('button');b.type='button';b.dataset.party=p;b.setAttribute('aria-pressed',String(st.p===p));
+  const l=document.createElement('span');l.className='pn';l.textContent=p;const r=document.createElement('span');r.className='pv';r.textContent=c+' \\u00b7 '+fmt(s);
+  b.append(l,r);li.appendChild(b);bar.querySelector('.plist').appendChild(li)});
+ items.forEach(li=>{if(li.hidden){const c=li.querySelector('.pick');if(c)c.checked=false}});syncBulk();
+ const h=new URLSearchParams();for(const k in st){if(st[k]&&!(k==='sort'&&st[k]==='amt'))h.set(k,st[k])}
+ history.replaceState(null,'',h.toString()?'#'+h:location.pathname+location.search)}
+bar.addEventListener('click',e=>{const c=e.target.closest('.chip');
+ if(c){if('new' in c.dataset){st.n=st.n?'':'1'}else if(c.dataset.f===''){st.t='';st.n=''}else{st.t=st.t===c.dataset.f?'':c.dataset.f}apply();return}
+ const v=e.target.closest('[data-v]');if(v){st.v=v.dataset.v;apply();return}
+ const pb=e.target.closest('[data-party]');if(pb){st.p=st.p===pb.dataset.party?'':pb.dataset.party;bar.querySelector('.parties').open=false;apply();return}
+});
+function period(){const now=new Date(),y=now.getFullYear(),m=now.getMonth();let f='',t='';
+ if(st.per==='m')f=iso(new Date(y,m,1));
+ else if(st.per==='lm'){f=iso(new Date(y,m-1,1));t=iso(new Date(y,m,0))}
+ else if(st.per==='90')f=iso(new Date(now-90*864e5));
+ else if(st.per==='fy')f=iso(new Date(m>=3?y:y-1,3,1));
+ if(st.per!=='c'){st.from=f;st.to=t}inp('from').value=st.from;inp('to').value=st.to;bar.querySelector('.dates').hidden=st.per!=='c'}
+if((st.from||st.to)&&!st.per)st.per='c';
+['per','from','to','q','sort'].forEach(k=>{const el=inp(k);el.value=st[k];el.addEventListener(k==='q'?'input':'change',()=>{st[k]=el.value;if(k==='per')period();apply()})});
+period();
+document.addEventListener('change',e=>{if(e.target.classList&&e.target.classList.contains('pick'))syncBulk()});
+document.addEventListener('click',e=>{if(e.target.classList&&e.target.classList.contains('pick'))e.stopPropagation()},true);
+if(bulk){let act='';bulk.addEventListener('click',e=>{const b=e.target.closest('[data-a]');if(b)act=b.dataset.a;
+  if(e.target.closest('[data-clear]')){items.forEach(li=>{const c=li.querySelector('.pick');if(c)c.checked=false});syncBulk()}});
+ bulk.addEventListener('submit',e=>{const sel=picks();const key=act==='settled'?'invs':'bills';
+  const ids=[...new Set(sel.flatMap(li=>(li.dataset[key]||'').split(',').filter(Boolean)))];
+  if(!act||!ids.length||ids.length>50){e.preventDefault();bulk.querySelector('.bnote').textContent=ids.length>50?'Up to 50 records at a time.':'Nothing to decide on.';return}
+  bulk.action='/leakage/decide/'+act;bulk.querySelector('[name=ids]').value=ids.join(',')})}
+apply()})()</script>'''
+
+
+def day(iso):
+    try:
+        return datetime.strptime(iso[:10], '%Y-%m-%d').strftime('%-d %b %Y')
+    except ValueError:
+        return iso
+
+
+def age_days(as_of, iso):
+    try:
+        return (datetime.strptime(str(as_of)[:10], '%Y-%m-%d')-datetime.strptime(iso[:10], '%Y-%m-%d')).days
+    except ValueError:
+        return None
+
+
+def ledger_row(n, item, csrf, confirmed=False, org='', seen=None, as_of=''):
     keys = ' · '.join(item.get('shipment_keys', [])) or 'No shipment key'
-    parties = sorted({b.get('vendor') for b in item.get('bills', []) if b.get('vendor')}) + \
-              sorted({i.get('customer') for i in item.get('invoices', []) if i.get('customer')})
     who = ' → '.join([', '.join(sorted({b.get('vendor') for b in item.get('bills', []) if b.get('vendor')})),
                       ', '.join(sorted({i.get('customer') for i in item.get('invoices', []) if i.get('customer')}))]).strip(' →')
     amt = Decimal(item.get('exposure_inr') or 0)
     amount = ('₹'+inr(amt)) if amt else '—'
-    label = 'at risk' if confirmed else ('exposure' if amt else '')
+    dated = sorted(str(b.get('date')) for b in item.get('bills', []) if b.get('date')) or \
+        sorted(str(i.get('date')) for i in item.get('invoices', []) if i.get('date'))
+    when = dated[-1][:10] if dated else ''
+    age = age_days(as_of, when) if confirmed and when and as_of else None
+    label = ('at risk'+(' · '+str(age)+' day'+('s' if age != 1 else '') if age is not None else '')) if confirmed else ('exposure' if amt else '')
+    search = ' '.join([PLAIN.get(item['type'], item['type'])] + list(item.get('shipment_keys', [])) +
+                      [str(b.get(k) or '') for b in item.get('bills', []) for k in ('bill_number', 'vendor')] +
+                      [str(i.get(k) or '') for i in item.get('invoices', []) for k in ('invoice_number', 'customer')]).lower()
+    is_new = seen is not None and item_key(item) not in seen
+    acts = ACTIONS.get(item['type'], ())
+    kind = 'decide' if acts else ('fix' if item['type'] in FIX_IN_ZOHO else 'other')
+    bills = ','.join(str(b['bill_id']) for b in item.get('bills', []) if str(b.get('bill_id', '')).isdigit())
+    invs = ','.join(str(i['invoice_id']) for i in item.get('invoices', [])
+                    if str(i.get('invoice_id', '')).isdigit() and Decimal(str(i.get('balance') or 0)) > 0)
+    bulk = [a for a in BULK_ACTIONS if a in acts and (invs if a == 'settled' else bills)]
+    pick = ('<input type="checkbox" class="pick" aria-label="Select for a bulk decision">' if bulk else '')
     body = ('<div class="body">'+records_table(item, org)+'<p class="detail">'+esc(item.get('detail'))+'</p>'+
             ''.join('<p class="detail">⚑ '+esc(f)+'</p>' for f in item.get('flags', []))+decision_forms(item, csrf, org)+'</div>')
-    return ('<li><details><summary><span class="n">'+'%02d' % n+'</span><span><span class="what">'+esc(PLAIN.get(item['type'], item['type']))+'</span>'
-            '<span class="keys" style="display:block">'+esc(keys)+'</span>'+('<span class="who" style="display:block">'+esc(who)+'</span>' if who else '')+
-            gap_bar(item, confirmed)+'</span><span class="amt">'+esc(amount)+('<small>'+label+'</small>' if label else '')+'</span></summary>'+body+'</details></li>')
+    return ('<li data-type="'+esc(item['type'])+'" data-amt="'+esc(str(amt))+'" data-date="'+esc(when)+'" data-q="'+esc(search)+'" data-kind="'+kind+
+            '" data-party="'+esc(item_party(item))+'" data-new="'+('1' if is_new else '')+'" data-acts="'+' '.join(bulk)+'" data-bills="'+esc(bills)+'" data-invs="'+esc(invs)+'">'
+            '<details><summary><span class="n">'+pick+'<span class="nn">'+'%02d' % n+'</span></span><span><span class="what">'+esc(PLAIN.get(item['type'], item['type']))+
+            ('<b class="newtag">New</b>' if is_new else '')+'</span>'
+            '<span class="keys" style="display:block">'+esc(keys)+(' · '+esc(day(when)) if when else '')+'</span>'+('<span class="who" style="display:block">'+esc(who)+'</span>' if who else '')+
+            gap_bar(item, confirmed)+'</span><span class="amt">'+esc(amount)+('<small>'+esc(label)+'</small>' if label else '')+'</span></summary>'+body+'</details></li>')
 
 
-def page(report, started_at, email_status, runs, decisions, csrf, running=False, flash='', flash_bad=False, enabled=True, daily_hour=8, zoho_org=''):
+def page(report, started_at, email_status, runs, decisions, csrf, running=False, flash='', flash_bad=False, enabled=True, daily_hour=8, zoho_org='', previous=None):
     head = ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>Leakage · Sattva Books</title><style>'+CSS+'</style></head><body>'+books_header('leakage'))
     flash_html = ('<p class="flash'+(' bad' if flash_bad else '')+'" role="status">'+esc(flash)+'</p>') if flash else ''
@@ -640,7 +858,8 @@ def page(report, started_at, email_status, runs, decisions, csrf, running=False,
              '<div><b>₹'+esc(inr(t['accepted_losses']))+'</b><span>accepted or written off</span></div>'
              '<div><b>₹'+esc(inr(t['excluded_overhead']))+'</b><span>overhead, excluded</span></div></section>')
 
-    conf_list = ''.join(ledger_row(n, it, csrf, True, zoho_org) for n, it in enumerate(confirmed, 1)) or ''
+    seen, as_of = report_keys(previous), report.get('as_of', '')
+    conf_list = ''.join(ledger_row(n, it, csrf, True, zoho_org, seen, as_of) for n, it in enumerate(confirmed, 1)) or ''
     conf_html = ('<ol class="ledger confirmed">'+conf_list+'</ol>') if conf_list else \
         '<p class="empty">'+('No confirmed leakage in this check.' if complete else 'Nothing confirmed — but this check is incomplete.')+'</p>'
     sec_conf = ('<section class="section" id="confirmed"><div class="aside"><div class="eyebrow">Confirmed leakage</div><h2>Money that left and has not come back.</h2>'
@@ -658,7 +877,7 @@ def page(report, started_at, email_status, runs, decisions, csrf, running=False,
         rows = ''
         for it in items:
             n += 1
-            rows += ledger_row(n, it, csrf, org=zoho_org)
+            rows += ledger_row(n, it, csrf, org=zoho_org, seen=seen, as_of=as_of)
         total = sum(Decimal(i['exposure_inr']) for i in items)
         why = WHY.get(kind, '')
         pot_html += ('<details class="bucket"><summary><span class="bname">'+esc(PLAIN.get(kind, kind))+'<small>'+esc(why)+'</small></span>'
@@ -697,4 +916,4 @@ def page(report, started_at, email_status, runs, decisions, csrf, running=False,
                 '<div class="group" style="margin-top:34px"><h3><span>Recent checks</span></h3><div class="scroll"><table class="log"><thead><tr><th>Started (IST)</th><th>Trigger</th><th>Status</th><th>Email</th><th>Note</th></tr></thead><tbody>'+
                 run_rows+'</tbody></table></div></div></div></section>')
     foot = ('<footer class="foot"><span><b>Sattva Books</b> · reads Zoho, never writes to it</span><span>Amounts are pre-GST INR at each document’s exchange rate.</span></footer>')
-    return head+flash_html+hero+strip+sec_conf+sec_pot+sec_acc+sec_more+foot+refresh+'</body></html>'
+    return head+flash_html+hero+strip+(filter_bar(confirmed, potential, seen is not None) if confirmed or potential else '')+sec_conf+sec_pot+sec_acc+sec_more+foot+refresh+(bulk_bar(csrf)+FILTER_JS if confirmed or potential else '')+'</body></html>'

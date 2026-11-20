@@ -539,7 +539,11 @@ a.zoho{color:var(--blue);font-weight:600;white-space:nowrap;text-decoration:none
 .group{margin:34px 0 0}.group:first-child{margin-top:0}
 .group h3{margin:0 0 10px;display:flex;justify-content:space-between;gap:12px;font:500 11px/1.4 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--slate)}
 .empty{padding:22px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);color:var(--slate)}
-.flash{margin:0;padding:14px var(--pad);font-size:14px;background:var(--pale);border-bottom:1px solid var(--line)}.flash.bad{background:#fdecea;color:#8e1c1c}
+.flash{position:fixed;z-index:9;bottom:24px;right:max(16px,calc((100vw - 1320px)/2));max-width:min(440px,calc(100vw - 32px));margin:0;padding:14px 44px 14px 16px;font:500 14px/1.45 var(--sans);color:var(--ink);background:#fff;border:1px solid var(--line);border-left:4px solid var(--ok);border-radius:2px;box-shadow:0 14px 34px -14px rgba(3,7,34,.45);animation:toast-in .2s ease-out}
+.flash.bad{border-left-color:var(--loss);color:#8e1c1c}.flash.gone{opacity:0;transform:translateY(-6px);transition:opacity .4s,transform .4s;pointer-events:none}
+.flash .x{position:absolute;top:8px;right:8px;width:28px;height:28px;border:0;background:none;font-size:18px;line-height:1;color:var(--slate);cursor:pointer}
+@media (max-width:640px){.flash{bottom:16px;right:16px}}
+@keyframes toast-in{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
 .log{width:100%;border-collapse:collapse;font-size:13px}.log td,.log th{padding:10px 10px 10px 0;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
 .log th{font:500 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--slate)}
 .log form{margin:0}.log button{background:none;border:0;color:var(--blue);font:500 13px var(--sans);cursor:pointer;padding:0;min-height:32px;text-decoration:underline}
@@ -798,6 +802,18 @@ if(bulk){let act='';bulk.addEventListener('click',e=>{const b=e.target.closest('
 apply()})()</script>'''
 
 
+# Keep the owner's place across a decision: filters (URL fragment, inherited through the 303) and scroll position.
+# The confirmation shows as a toast where they are; good news fades, errors stay until dismissed.
+KEEP_JS = '''<script>(()=>{const K='leakage-scroll';
+document.addEventListener('submit',e=>{const f=e.target;if(e.defaultPrevented||!f.action||f.action.indexOf('/leakage/')<0)return;
+ if(location.hash&&f.action.indexOf('#')<0)f.action=f.action+location.hash;try{sessionStorage.setItem(K,String(scrollY))}catch(x){}});
+const q=new URLSearchParams(location.search);
+if(q.has('m')){let y=null;try{y=sessionStorage.getItem(K);sessionStorage.removeItem(K)}catch(x){}
+ if(y!==null)requestAnimationFrame(()=>scrollTo(0,+y));history.replaceState(null,'',location.pathname+location.hash)}
+const t=document.querySelector('.flash');if(t){const hide=()=>{t.classList.add('gone');setTimeout(()=>t.remove(),450)};
+ t.querySelector('.x').addEventListener('click',hide);if(!t.classList.contains('bad'))setTimeout(hide,6000)}})()</script>'''
+
+
 def day(iso):
     try:
         return datetime.strptime(iso[:10], '%Y-%m-%d').strftime('%-d %b %Y')
@@ -847,7 +863,8 @@ def ledger_row(n, item, csrf, confirmed=False, org='', seen=None, as_of=''):
 def page(report, started_at, email_status, runs, decisions, csrf, running=False, flash='', flash_bad=False, enabled=True, daily_hour=8, zoho_org='', previous=None):
     head = ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>Leakage · Sattva Books</title><style>'+CSS+'</style></head><body>'+books_header('leakage'))
-    flash_html = ('<p class="flash'+(' bad' if flash_bad else '')+'" role="status">'+esc(flash)+'</p>') if flash else ''
+    flash_html = ('<p class="flash'+(' bad' if flash_bad else '')+'" role="'+('alert' if flash_bad else 'status')+'">'+esc(flash)+
+                  '<button type="button" class="x" aria-label="Dismiss">×</button></p>') if flash else ''
     run_form = ('<form method="post" action="/leakage/run"><input type="hidden" name="csrf" value="'+esc(csrf)+'">'
                 '<button class="btn btn-light" type="submit"'+(' disabled' if running or not enabled else '')+'>'+
                 ('Checking Zoho…' if running else 'Check Zoho now')+'</button><span class="hint">'+
@@ -951,4 +968,4 @@ def page(report, started_at, email_status, runs, decisions, csrf, running=False,
                 '<div class="group" style="margin-top:34px"><h3><span>Recent checks</span></h3><div class="scroll"><table class="log"><thead><tr><th>Started (IST)</th><th>Trigger</th><th>Status</th><th>Email</th><th>Note</th></tr></thead><tbody>'+
                 run_rows+'</tbody></table></div></div></div></section>')
     foot = ('<footer class="foot"><span><b>Sattva Books</b> · reads Zoho, never writes to it</span><span>Amounts are pre-GST INR at each document’s exchange rate.</span></footer>')
-    return head+flash_html+hero+strip+(filter_bar(confirmed, potential, seen is not None) if confirmed or potential else '')+sec_conf+sec_pot+sec_acc+sec_more+foot+refresh+(bulk_bar(csrf)+FILTER_JS if confirmed or potential else '')+'</body></html>'
+    return head+flash_html+hero+strip+(filter_bar(confirmed, potential, seen is not None) if confirmed or potential else '')+sec_conf+sec_pot+sec_acc+sec_more+foot+refresh+(bulk_bar(csrf)+FILTER_JS if confirmed or potential else '')+KEEP_JS+'</body></html>'

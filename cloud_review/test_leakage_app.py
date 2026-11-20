@@ -211,6 +211,15 @@ class PageTests(unittest.TestCase):
             m = monitor(d)
             self.assertEqual(m.decide('write_off', {'ids': '11,12,13', 'reason': 'Maersk no-show fees, absorbed'}), 3)
 
+    def test_flash_is_a_dismissible_toast_and_page_keeps_place(self):
+        report = A.Monitor._failed_report(datetime(2026, 11, 20, tzinfo=IST), 'Zoho HTTP 503')
+        ok = A.page(report, '2026-11-20T08:00:00+05:30', 'sent', [], [], 'c', flash='Decision saved and applied.')
+        bad = A.page(report, '2026-11-20T08:00:00+05:30', 'sent', [], [], 'c', flash='Give a reason', flash_bad=True)
+        self.assertIn('<p class="flash" role="status">Decision saved and applied.<button type="button" class="x"', ok)
+        self.assertIn('class="flash bad" role="alert"', bad)
+        self.assertIn("sessionStorage.setItem(K", ok)  # scroll kept across the decision
+        self.assertIn("f.action=f.action+location.hash", ok)  # filters ride through the redirect
+
     def test_incomplete_is_never_presented_as_clean(self):
         report = A.Monitor._failed_report(datetime(2026, 11, 20, tzinfo=IST), 'Zoho HTTP 503')
         out = A.page(report, '2026-11-20T08:00:00+05:30', 'not configured', [], [], 'c')

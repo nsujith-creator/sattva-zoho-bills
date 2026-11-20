@@ -142,6 +142,18 @@ class PageTests(unittest.TestCase):
         self.assertNotIn('books.zoho.in', bare)
         self.assertEqual(A.zoho_link('60012345', 'bills', '1"><script>', 'x'), 'x')
 
+    def test_filter_bar_has_a_chip_per_type_and_rows_carry_filter_data(self):
+        with tempfile.TemporaryDirectory() as d:
+            m = monitor(d, evidence([bill('1', d='2026-10-01', vendor='Maersk <India>')]))
+            m.run('manual')
+            report, started, email = m.latest_report()
+            out = A.page(report, started, email, m.runs(), m.decision_rows(), 'c')
+        self.assertIn('data-f="UNBILLED"', out)
+        self.assertIn('data-type="UNBILLED" data-amt="10000.00" data-date="2026-10-01"', out)
+        self.assertIn('maersk &lt;india&gt;', out)  # search text is escaped
+        self.assertIn('1 Oct 2026', out)
+        self.assertLess(out.index('id="decide"'), out.index("getElementById('filters')"))  # script runs after the lists
+
     def test_incomplete_is_never_presented_as_clean(self):
         report = A.Monitor._failed_report(datetime(2026, 11, 20, tzinfo=IST), 'Zoho HTTP 503')
         out = A.page(report, '2026-11-20T08:00:00+05:30', 'not configured', [], [], 'c')

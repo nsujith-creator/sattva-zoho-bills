@@ -407,6 +407,22 @@ h1 .money{color:#ff6b5e}h1 .calm{color:#7fd3a8}
 .strip div{padding:16px 24px;border-left:1px solid rgba(255,255,255,.22)}.strip div:first-child{border-left:0;padding-left:0}
 .strip b{display:block;font-size:clamp(20px,2vw,26px);font-weight:700;letter-spacing:-.03em;line-height:1.1}
 .strip span{font-size:13px;color:rgba(255,255,255,.8)}
+.filters{position:sticky;top:88px;z-index:4;background:#fff;border-bottom:1px solid var(--line);padding:14px var(--pad) 10px;box-shadow:0 6px 18px -14px rgba(3,7,34,.35)}
+.chips{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;scrollbar-width:thin}
+.chip{flex:0 0 auto;display:grid;grid-template-columns:auto auto;gap:0 10px;align-items:baseline;text-align:left;border:1px solid var(--line);border-radius:2px;background:#fff;color:var(--ink);padding:8px 12px;font:500 13px/1.3 var(--sans);cursor:pointer}
+.chip .l{grid-column:1/-1}.chip .c{font:500 12px var(--mono);color:var(--slate)}.chip .s{font:500 12px var(--mono);color:var(--ink);justify-self:end}
+.chip.red{border-left:3px solid #c62828}.chip.red .s{color:#b71c1c}
+.chip:hover{border-color:var(--electric)}.chip[aria-pressed=true]{background:var(--navy);border-color:var(--navy);color:#fff}.chip[aria-pressed=true] .c,.chip[aria-pressed=true] .s{color:var(--sky)}
+.frow{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px 14px;margin-top:10px}
+.frow label{display:flex;flex-direction:column;gap:3px;font:500 11px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--slate)}
+.frow .grow{flex:1 1 220px}
+.frow input,.frow select{font:400 14px var(--sans);color:var(--ink);border:1px solid var(--line);border-radius:2px;padding:7px 9px;background:#fff;min-height:36px;text-transform:none;letter-spacing:0}
+.frow input:focus,.frow select:focus{outline:2px solid var(--electric);outline-offset:-1px}
+.presets{display:flex;flex-wrap:wrap;gap:6px}.presets button{border:1px solid var(--line);background:var(--wash);color:var(--blue);border-radius:2px;padding:8px 10px;font:500 12px var(--sans);cursor:pointer;min-height:36px}
+.presets button:hover{border-color:var(--blue)}
+.fsum{margin:8px 0 0;font:500 12px var(--mono);color:var(--slate)}
+[hidden]{display:none!important}
+@media (max-width:640px){.filters{position:static}.frow label:not(.grow){flex:1 1 40%}.presets{flex-wrap:nowrap;overflow-x:auto;width:100%}.presets button{flex:0 0 auto}}
 .section{display:grid;grid-template-columns:minmax(0,.62fr) minmax(0,1.38fr);gap:clamp(28px,5vw,72px);padding:clamp(34px,4vw,56px) var(--pad);border-top:1px solid var(--line)}
 .section.wash{background:var(--wash)}
 .section h2{margin:10px 0 0;font-size:clamp(1.35rem,2.1vw,1.9rem);line-height:1.08;letter-spacing:-.035em;font-weight:700}
@@ -575,6 +591,70 @@ def decision_forms(item, csrf, org=''):
     return '<div class="decide">'+''.join(out)+'</div>' if out else ''
 
 
+def day(iso):
+    try:
+        return datetime.strptime(iso[:10], '%Y-%m-%d').strftime('%-d %b %Y')
+    except ValueError:
+        return iso
+
+
+def filter_bar(confirmed, potential):
+    """Chips per finding type with count and amount, a date range, search and sort. Filtering runs in the browser."""
+    kinds, seen = [], set()
+    for it in confirmed+potential:
+        if it['type'] not in seen:
+            seen.add(it['type']); kinds.append(it['type'])
+    conf_types = {it['type'] for it in confirmed}
+    chip = lambda f, label, red: ('<button type="button" class="chip'+(' red' if red else '')+'" data-f="'+esc(f)+'" aria-pressed="false">'
+                                  '<span class="l">'+esc(label)+'</span><span class="c"></span><span class="s"></span></button>')
+    chips = chip('', 'All open', False)+''.join(chip(k, PLAIN.get(k, k), k in conf_types) for k in kinds)
+    return ('<section class="filters" id="filters" aria-label="Filter findings"><div class="chips" role="group" aria-label="Finding type">'+chips+'</div>'
+            '<div class="frow"><label>From<input type="date" name="from"></label><label>To<input type="date" name="to"></label>'
+            '<span class="presets"><button type="button" data-p="m">This month</button><button type="button" data-p="lm">Last month</button>'
+            '<button type="button" data-p="90">Last 90 days</button><button type="button" data-p="">All dates</button></span>'
+            '<label class="grow">Search<input type="search" name="q" placeholder="MBL, bill or invoice no., vendor, customer" autocomplete="off" spellcheck="false"></label>'
+            '<label>Sort<select name="sort"><option value="amt">Biggest first</option><option value="new">Newest first</option><option value="old">Oldest first</option></select></label></div>'
+            '<p class="fsum" aria-live="polite"></p></section>')
+
+
+FILTER_JS = '''<script>(()=>{const bar=document.getElementById('filters');if(!bar)return;
+const items=[...document.querySelectorAll('#confirmed li[data-type],#decide li[data-type]')];
+const st={t:'',from:'',to:'',q:'',sort:'amt'};
+try{const h=new URLSearchParams(location.hash.slice(1));for(const k in st){if(h.has(k))st[k]=h.get(k)}}catch(e){}
+const inp=n=>bar.querySelector('[name='+n+']');
+const fmt=v=>v?'\u20b9'+Math.round(v).toLocaleString('en-IN'):'\u2014';
+const iso=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+const pass=(li,typeToo)=>{const q=st.q.trim().toLowerCase(),d=li.dataset.date;
+ return (!typeToo||!st.t||li.dataset.type===st.t)&&(!st.from||(d&&d>=st.from))&&(!st.to||(d&&d<=st.to))&&(!q||li.dataset.q.includes(q))};
+const cmp=(a,b)=>st.sort==='amt'?(+b.dataset.amt)-(+a.dataset.amt):
+ (st.sort==='new'?(b.dataset.date||'').localeCompare(a.dataset.date||''):(a.dataset.date||'~').localeCompare(b.dataset.date||'~'));
+function apply(){let n=0,sum=0;
+ items.forEach(li=>{const ok=pass(li,true);li.hidden=!ok;if(ok){n++;sum+=+li.dataset.amt}});
+ bar.querySelectorAll('[data-f]').forEach(b=>{const t=b.dataset.f;let c=0,s=0;
+  items.forEach(li=>{if((!t||li.dataset.type===t)&&pass(li,false)){c++;s+=+li.dataset.amt}});
+  b.querySelector('.c').textContent=c;b.querySelector('.s').textContent=fmt(s);b.setAttribute('aria-pressed',String(st.t===t));b.hidden=!!t&&!c&&st.t!==t});
+ const narrowed=!!(st.t||st.q||st.from||st.to);
+ document.querySelectorAll('#confirmed ol.ledger,#decide ol.ledger').forEach(ol=>{[...ol.children].sort(cmp).forEach(li=>ol.appendChild(li))});
+ document.querySelectorAll('#decide details.bucket').forEach(d=>{const vis=[...d.querySelectorAll('li[data-type]')].filter(li=>!li.hidden);
+  d.hidden=!vis.length;d.querySelector('.bcount').textContent=vis.length;d.querySelector('.btotal').textContent=fmt(vis.reduce((a,li)=>a+(+li.dataset.amt),0));
+  if(narrowed&&vis.length)d.open=true});
+ ['confirmed','decide'].forEach(id=>{const sec=document.getElementById(id);if(!sec)return;let i=0;
+  sec.querySelectorAll('li[data-type]').forEach(li=>{if(!li.hidden){const el=li.querySelector('.n');if(el)el.textContent=String(++i).padStart(2,'0')}});
+  let e=sec.querySelector('.fempty');if(!e){e=document.createElement('p');e.className='empty fempty';e.textContent='Nothing here matches these filters.';(sec.querySelector('ol.ledger,.bucket,.empty')||sec.lastElementChild).parentNode.appendChild(e)}
+  e.hidden=!narrowed||i>0});
+ bar.querySelector('.fsum').textContent=narrowed?'Showing '+n+' of '+items.length+' open items \u00b7 '+fmt(sum)+' exposure':items.length+' open items \u00b7 '+fmt(sum)+' exposure';
+ const h=new URLSearchParams();for(const k in st){if(st[k]&&!(k==='sort'&&st[k]==='amt'))h.set(k,st[k])}
+ history.replaceState(null,'',h.toString()?'#'+h:location.pathname+location.search)}
+bar.addEventListener('click',e=>{const c=e.target.closest('[data-f]');if(c){st.t=st.t===c.dataset.f?'':c.dataset.f;apply();return}
+ const p=e.target.closest('[data-p]');if(!p)return;const now=new Date();let f='',t='';
+ if(p.dataset.p==='m'){f=iso(new Date(now.getFullYear(),now.getMonth(),1))}
+ else if(p.dataset.p==='lm'){f=iso(new Date(now.getFullYear(),now.getMonth()-1,1));t=iso(new Date(now.getFullYear(),now.getMonth(),0))}
+ else if(p.dataset.p==='90'){f=iso(new Date(now-90*864e5))}
+ st.from=inp('from').value=f;st.to=inp('to').value=t;apply()});
+['from','to','q','sort'].forEach(k=>{const el=inp(k);el.value=st[k];el.addEventListener(k==='q'?'input':'change',()=>{st[k]=el.value;apply()})});
+apply()})()</script>'''
+
+
 def ledger_row(n, item, csrf, confirmed=False, org=''):
     keys = ' · '.join(item.get('shipment_keys', [])) or 'No shipment key'
     parties = sorted({b.get('vendor') for b in item.get('bills', []) if b.get('vendor')}) + \
@@ -584,10 +664,17 @@ def ledger_row(n, item, csrf, confirmed=False, org=''):
     amt = Decimal(item.get('exposure_inr') or 0)
     amount = ('₹'+inr(amt)) if amt else '—'
     label = 'at risk' if confirmed else ('exposure' if amt else '')
+    dated = sorted(str(b.get('date')) for b in item.get('bills', []) if b.get('date')) or \
+        sorted(str(i.get('date')) for i in item.get('invoices', []) if i.get('date'))
+    when = dated[-1][:10] if dated else ''
+    search = ' '.join([PLAIN.get(item['type'], item['type'])] + list(item.get('shipment_keys', [])) +
+                      [str(b.get(k) or '') for b in item.get('bills', []) for k in ('bill_number', 'vendor')] +
+                      [str(i.get(k) or '') for i in item.get('invoices', []) for k in ('invoice_number', 'customer')]).lower()
     body = ('<div class="body">'+records_table(item, org)+'<p class="detail">'+esc(item.get('detail'))+'</p>'+
             ''.join('<p class="detail">⚑ '+esc(f)+'</p>' for f in item.get('flags', []))+decision_forms(item, csrf, org)+'</div>')
-    return ('<li><details><summary><span class="n">'+'%02d' % n+'</span><span><span class="what">'+esc(PLAIN.get(item['type'], item['type']))+'</span>'
-            '<span class="keys" style="display:block">'+esc(keys)+'</span>'+('<span class="who" style="display:block">'+esc(who)+'</span>' if who else '')+
+    return ('<li data-type="'+esc(item['type'])+'" data-amt="'+esc(str(amt))+'" data-date="'+esc(when)+'" data-q="'+esc(search)+'">'
+            '<details><summary><span class="n">'+'%02d' % n+'</span><span><span class="what">'+esc(PLAIN.get(item['type'], item['type']))+'</span>'
+            '<span class="keys" style="display:block">'+esc(keys)+(' · '+esc(day(when)) if when else '')+'</span>'+('<span class="who" style="display:block">'+esc(who)+'</span>' if who else '')+
             gap_bar(item, confirmed)+'</span><span class="amt">'+esc(amount)+('<small>'+label+'</small>' if label else '')+'</span></summary>'+body+'</details></li>')
 
 
@@ -697,4 +784,4 @@ def page(report, started_at, email_status, runs, decisions, csrf, running=False,
                 '<div class="group" style="margin-top:34px"><h3><span>Recent checks</span></h3><div class="scroll"><table class="log"><thead><tr><th>Started (IST)</th><th>Trigger</th><th>Status</th><th>Email</th><th>Note</th></tr></thead><tbody>'+
                 run_rows+'</tbody></table></div></div></div></section>')
     foot = ('<footer class="foot"><span><b>Sattva Books</b> · reads Zoho, never writes to it</span><span>Amounts are pre-GST INR at each document’s exchange rate.</span></footer>')
-    return head+flash_html+hero+strip+sec_conf+sec_pot+sec_acc+sec_more+foot+refresh+'</body></html>'
+    return head+flash_html+hero+strip+(filter_bar(confirmed, potential) if confirmed or potential else '')+sec_conf+sec_pot+sec_acc+sec_more+foot+refresh+(FILTER_JS if confirmed or potential else '')+'</body></html>'

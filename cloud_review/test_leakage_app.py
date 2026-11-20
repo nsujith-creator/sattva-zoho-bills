@@ -110,6 +110,18 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual((report['status'], email), ('INCOMPLETE', 'sent'))
         self.assertIn('INCOMPLETE', sent[0][3])
 
+    def test_email_has_html_with_verdict_rows_and_escaped_text(self):
+        sent = []
+        env = {'RESEND_API_KEY': 'k', 'LEAKAGE_EMAIL_TO': 'owner@example.com', 'LEAKAGE_EMAIL_FROM': 'books@example.com'}
+        m = monitor(self.tmp.name, evidence([bill('1', d='2026-10-01', vendor='<b>Liner</b>')]), env=env, sender=lambda *a: sent.append(a))
+        m.run('daily')
+        key, frm, to, subject, text, html_body = sent[0]
+        self.assertIn('is leaking across 1 shipment.', html_body)
+        self.assertIn('Cost not billed to any customer', html_body)
+        self.assertIn('&lt;b&gt;Liner&lt;/b&gt;', html_body); self.assertNotIn('<b>Liner</b>', html_body)
+        self.assertIn('https://books.sattvaglobal.in/leakage', html_body)
+        self.assertIn('Open the ledger', text)
+
     def test_config_error_is_incomplete_with_reason(self):
         def bad():
             raise L.ConfigError('ZOHO_RECON_REFRESH_TOKEN looks like a template placeholder')

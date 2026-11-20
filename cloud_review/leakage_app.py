@@ -44,13 +44,13 @@ ACTIONS = {
 }
 PLAIN = {
     'UNBILLED': 'Cost not billed to any customer',
-    'LATE COST NOT RE-BILLED': 'Invoiced below the vendor cost',
+    'LATE COST NOT RE-BILLED': 'Late cost not re-billed',
     'UNRECOVERED VENDOR PAYMENT': 'Vendor paid, customer has not',
     'awaiting invoice': 'Awaiting invoice (under 7 days)',
     'no or weak shipment key': 'No MBL or container on the bill',
     'uncertain near match': 'Possible match — confirm',
     'draft invoice only': 'Invoice still in draft',
-    'billed below cost': 'Billed below cost',
+    'billed below cost': 'Priced below cost',
     'late cost while margin still positive': 'Cost booked 14+ days after invoice, still in margin',
     'overdue receivable (vendor not yet paid)': 'Customer overdue',
     'unused vendor credit (vendor owes us)': 'Unapplied credit with vendor',
@@ -86,7 +86,7 @@ PRIORITY = ['possible re-issued vendor bill booked twice', 'possible duplicate v
             'invoice matches several shipments (1:1 violation)', 'owner link to unknown invoice', 'decision without reason',
             'late cost while margin still positive']
 WHY = {
-    'billed below cost': 'Invoice below cost; accept the loss or rebill.',
+    'billed below cost': 'All costs were known when you invoiced, and the invoice is lower. Usually a deliberate rate; accept the loss or rebill.',
     'unused vendor credit (vendor owes us)': 'Money sitting with the vendor, unapplied in Zoho.',
     'overdue receivable (vendor not yet paid)': 'Customer late; you have not paid the vendor yet either.',
     'invoice with no vendor cost recorded': 'Billed, but no carrier bill booked in Zoho.',
@@ -113,7 +113,8 @@ def connect(path):
 class Monitor:
     def __init__(self, db_path, data_dir, env=None, client_factory=None, sender=None, now=None):
         self.db_path, self.env = db_path, (os.environ if env is None else env)
-        self.cache_dir = Path(data_dir)/'leakage_cache'
+        self.data_dir = Path(data_dir)
+        self.cache_dir = self.data_dir/'leakage_cache'
         self.client_factory = client_factory or (lambda: L.ReadOnlyZoho(L.load_config(self.env), budget=self.budget()))
         self.sender = sender or resend_send
         self.now = now or (lambda: datetime.now(IST))
@@ -189,6 +190,7 @@ class Monitor:
                 evidence, reasons, calls = L.collect(client, L.Cache(self.cache_dir), L.FY_START)
                 report = L.reconcile(evidence, started.date(), self.decisions(), reasons)
                 report['api_calls'] = calls
+                self._save_evidence(evidence, reasons, calls, started)
             except L.ConfigError as exc:
                 error = str(exc)
                 report = self._failed_report(started, 'Configuration: '+error)
@@ -201,6 +203,33 @@ class Monitor:
                 db.execute('UPDATE leakage_runs SET finished_at=?, status=?, report_json=?, email_status=?, error=? WHERE id=?',
                            (self.now().isoformat(), report['status'], json.dumps(report), email_status, error, run_id))
             return run_id
+        finally:
+            self.lock.release()
+
+    def _save_evidence(self, evidence, reasons, calls, started):
+        """Keep the last Zoho read so a decision can be applied at once, without reading Zoho again."""
+        path = Path(self.data_dir)/'leakage-evidence.json'
+        tmp = path.with_suffix('.tmp')
+        tmp.write_text(json.dumps({'evidence': evidence, 'reasons': list(reasons), 'calls': calls,
+                                   'read_at': started.isoformat(timespec='seconds')}, default=str))
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+
+    def reapply(self):
+        """Re-run the reconciliation on the last Zoho read with the current decisions. No Zoho calls, no email."""
+        path = Path(self.data_dir)/'leakage-evidence.json'
+        if not path.exists() or not self.lock.acquire(blocking=False):
+            return False
+        try:
+            saved = json.loads(path.read_text())
+            read_at = datetime.fromisoformat(saved['read_at'])
+            report = L.reconcile(saved['evidence'], read_at.date(), self.decisions(), saved['reasons'])
+            report.update(api_calls=saved['calls'], read_at=saved['read_at'], generated_at=self.now().isoformat(timespec='seconds'))
+            stamp = self.now().isoformat()
+            with connect(self.db_path) as db:
+                db.execute('INSERT INTO leakage_runs(trigger, started_at, finished_at, status, report_json, email_status) VALUES (?,?,?,?,?,?)',
+                           ('decision', stamp, stamp, report['status'], json.dumps(report), 'not sent (decision applied)'))
+            return True
         finally:
             self.lock.release()
 
@@ -226,7 +255,7 @@ class Monitor:
     def previous_report(self):
         """The last complete report before the latest one, for "new since last check"."""
         with connect(self.db_path) as db:
-            rows = db.execute("SELECT report_json FROM leakage_runs WHERE report_json IS NOT NULL ORDER BY id DESC LIMIT 20").fetchall()
+            rows = db.execute("SELECT report_json FROM leakage_runs WHERE report_json IS NOT NULL AND trigger != 'decision' ORDER BY id DESC LIMIT 20").fetchall()
         for (raw,) in rows[1:]:
             report = json.loads(raw)
             if report.get('status') == 'COMPLETE':
@@ -309,14 +338,20 @@ class Monitor:
         try:
             self.sender(key, sender, [x.strip() for x in to.split(',') if x.strip()], subject, '\n'.join(lines))
             return 'sent'
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = exc.read(300).decode('utf8', 'replace')
+            except Exception:
+                detail = ''
+            return ('failed: HTTP '+str(exc.code)+' '+' '.join(detail.split()))[:200]
         except Exception as exc:
-            return 'failed: '+type(exc).__name__
+            return ('failed: '+type(exc).__name__+' '+str(exc))[:200]
 
 
 def resend_send(key, sender, to, subject, text):
     body = json.dumps({'from': sender, 'to': to, 'subject': subject, 'text': text}).encode()
     req = urllib.request.Request('https://api.resend.com/emails', data=body, method='POST',
-                                 headers={'Authorization': 'Bearer '+key, 'Content-Type': 'application/json'})
+                                 headers={'Authorization': 'Bearer '+key, 'Content-Type': 'application/json', 'User-Agent': 'sattva-books/1.0'})
     with urllib.request.urlopen(req, timeout=20) as response:
         if response.status >= 300:
             raise RuntimeError('Resend HTTP '+str(response.status))
@@ -843,7 +878,7 @@ def page(report, started_at, email_status, runs, decisions, csrf, running=False,
     ev = report.get('evidence_counts', {})
     reasons = report.get('incomplete_reasons') or []
     status_line = ('<div class="line"><b'+('' if complete else ' class="bad"')+'>● '+('Complete' if complete else 'Incomplete')+'</b> · checked '+
-                   esc(ist(started_at))+' IST · email '+esc(email_status or '—')+'</div>')
+                   esc(ist(report.get('read_at') or started_at))+' IST'+(' · decisions applied '+esc(ist(started_at))+' IST' if report.get('read_at') else ' · email '+esc(email_status or '—'))+'</div>')
     evidence = ('<details class="evidence"><summary>What this check read</summary><dl>'
                 '<div><dt>Vendor bills</dt><dd>'+esc(ev.get('bills', 0))+'</dd></div><div><dt>Sales invoices</dt><dd>'+esc(ev.get('invoices', 0))+'</dd></div>'
                 '<div><dt>Credit notes</dt><dd>'+esc(ev.get('creditnotes', 0))+'</dd></div><div><dt>Shipments matched</dt><dd>'+esc(report.get('shipments', 0))+'</dd></div>'

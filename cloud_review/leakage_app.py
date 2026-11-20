@@ -252,6 +252,13 @@ class Monitor:
                              "ORDER BY id DESC LIMIT 1").fetchone()
         return (json.loads(row[0]), row[1], row[2]) if row else (None, None, None)
 
+    def _last_full_report(self):
+        """Latest complete report from a Zoho read (not a decision re-apply). While a run is emailing, that is the previous run."""
+        with connect(self.db_path) as db:
+            row = db.execute("SELECT report_json FROM leakage_runs WHERE report_json IS NOT NULL AND trigger != 'decision' "
+                             "AND status='COMPLETE' ORDER BY id DESC LIMIT 1").fetchone()
+        return json.loads(row[0]) if row else None
+
     def previous_report(self):
         """The last complete report before the latest one, for "new since last check"."""
         with connect(self.db_path) as db:
@@ -336,7 +343,9 @@ class Monitor:
         url = self.env.get('LEAKAGE_PUBLIC_URL', 'https://books.sattvaglobal.in/leakage')
         lines += ['', 'Open the ledger: '+url]
         try:
-            self.sender(key, sender, [x.strip() for x in to.split(',') if x.strip()], subject, '\n'.join(lines))
+            seen = report_keys(self._last_full_report())
+            self.sender(key, sender, [x.strip() for x in to.split(',') if x.strip()], subject, '\n\n'.join(lines),
+                        email_html(report, url, seen))
             return 'sent'
         except urllib.error.HTTPError as exc:
             try:
@@ -348,13 +357,79 @@ class Monitor:
             return ('failed: '+type(exc).__name__+' '+str(exc))[:200]
 
 
-def resend_send(key, sender, to, subject, text):
-    body = json.dumps({'from': sender, 'to': to, 'subject': subject, 'text': text}).encode()
+def resend_send(key, sender, to, subject, text, html_body=None):
+    payload = {'from': sender, 'to': to, 'subject': subject, 'text': text}
+    if html_body:
+        payload['html'] = html_body
+    body = json.dumps(payload).encode()
     req = urllib.request.Request('https://api.resend.com/emails', data=body, method='POST',
                                  headers={'Authorization': 'Bearer '+key, 'Content-Type': 'application/json', 'User-Agent': 'sattva-books/1.0'})
     with urllib.request.urlopen(req, timeout=20) as response:
         if response.status >= 300:
             raise RuntimeError('Resend HTTP '+str(response.status))
+
+
+def email_html(report, url, seen=None):
+    """The daily report as an email: inline styles and tables only, so Outlook and Gmail render it the same."""
+    navy, blue, ink, slate, line, loss, ok, wash = '#030722', '#024aab', '#111a33', '#4a5875', '#ccd9e8', '#c62828', '#0f7a4a', '#f4f9ff'
+    font = "font-family:Poppins,'Segoe UI',Arial,sans-serif;"
+    mono = "font-family:'DM Mono',Consolas,'Courier New',monospace;"
+    t = report['totals_inr']
+    confirmed, potential = report.get('confirmed_leakage', []), report.get('potential_issues', [])
+    complete = report.get('status') == 'COMPLETE'
+    amount = Decimal(t['confirmed_deduplicated'])
+    shipments = len({','.join(sorted(str(b.get('bill_id')) for b in i.get('bills', []))) for i in confirmed})
+    new = [i for i in confirmed+potential if seen is not None and item_key(i) not in seen]
+    if not complete:
+        verdict = '<span style="color:'+loss+'">This check is incomplete.</span> Silence is not clean.'
+    elif amount > 0:
+        verdict = ('<span style="color:'+loss+'">₹'+esc(inr(amount))+'</span> is leaking across '+str(shipments)+' shipment'+('s' if shipments != 1 else '')+'.')
+    else:
+        verdict = '<span style="color:'+ok+'">Nothing is leaking.</span>'
+    reasons = ''.join('<li>'+esc(r)+'</li>' for r in report.get('incomplete_reasons', [])[:6])
+    cell = lambda big, small, color=ink: ('<td style="padding:12px 10px;border-left:1px solid '+line+';'+font+'"><div style="font-size:18px;font-weight:700;color:'+color+'">'+big+
+                                          '</div><div style="font-size:12px;color:'+slate+'">'+small+'</div></td>')
+    stats = ('<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid '+line+'"><tr>'+
+             cell(str(shipments), 'shipments leaking', loss if shipments else ink)+cell(str(len(potential)), 'need your call')+
+             cell(str(len(new)) if seen is not None else '—', 'new since last check', blue)+cell('₹'+esc(inr(t['accepted_losses'])), 'accepted or written off')+'</tr></table>')
+    def row(i):
+        dated = sorted(str(b.get('date')) for b in i.get('bills', []) if b.get('date'))
+        age = age_days(report.get('as_of', ''), dated[-1]) if dated else None
+        party = item_party(i)
+        isnew = seen is not None and item_key(i) not in seen
+        return ('<tr><td style="padding:10px 8px 10px 0;border-top:1px solid '+line+';vertical-align:top;'+font+'font-size:14px;color:'+ink+'"><b>'+esc(PLAIN.get(i['type'], i['type']))+'</b>'+
+                (' <span style="background:#1f7cff;color:#fff;font-size:10px;padding:1px 5px;border-radius:2px;'+mono+'">NEW</span>' if isnew else '')+
+                '<div style="'+mono+'font-size:12px;color:'+ink+'">'+esc(' · '.join(i.get('shipment_keys', [])[:3]) or 'No shipment key')+'</div>'
+                '<div style="font-size:12px;color:'+slate+'">'+esc(party)+'</div></td>'
+                '<td align="right" style="padding:10px 0;border-top:1px solid '+line+';vertical-align:top;white-space:nowrap;'+font+'"><div style="font-size:16px;font-weight:700;color:'+loss+'">₹'+
+                esc(inr(i.get('exposure_inr') or 0))+'</div><div style="font-size:11px;color:'+slate+'">'+(str(age)+' days' if age is not None else '')+'</div></td></tr>')
+    conf_rows = ''.join(row(i) for i in sorted(confirmed, key=lambda i: -Decimal(i.get('exposure_inr') or 0))[:15])
+    more = len(confirmed)-15
+    groups = {}
+    for i in potential:
+        g = groups.setdefault(i['type'], [0, Decimal(0)]); g[0] += 1; g[1] += Decimal(i.get('exposure_inr') or 0)
+    order = sorted(groups, key=lambda k: (PRIORITY.index(k) if k in PRIORITY else len(PRIORITY)))
+    pot_rows = ''.join('<tr><td style="padding:8px 8px 8px 0;border-top:1px solid '+line+';'+font+'font-size:14px;color:'+ink+'">'+esc(PLAIN.get(k, k))+'</td>'
+                       '<td align="right" style="padding:8px 8px;border-top:1px solid '+line+';'+mono+'font-size:12px;color:'+slate+'">'+str(groups[k][0])+'</td>'
+                       '<td align="right" style="padding:8px 0;border-top:1px solid '+line+';'+mono+'font-size:13px;color:'+ink+';white-space:nowrap">'+
+                       ('₹'+esc(inr(groups[k][1])) if groups[k][1] else '—')+'</td></tr>' for k in order)
+    h2 = lambda text: '<div style="'+mono+'font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:'+blue+';margin:28px 0 8px">'+text+'</div>'
+    body = ('<div style="'+font+'font-size:22px;line-height:1.3;font-weight:700;color:'+ink+';margin:0 0 6px">'+verdict+'</div>'
+            '<div style="'+mono+'font-size:12px;color:'+slate+';margin-bottom:18px">'+esc(report.get('as_of', ''))+' · '+esc(report.get('status', ''))+' · pre-GST INR</div>'+
+            ('<div style="background:#fdecea;border-left:4px solid '+loss+';padding:12px 14px;'+font+'font-size:13px;color:#8e1c1c"><b>Why incomplete</b><ul style="margin:6px 0 0;padding-left:18px">'+reasons+'</ul></div>' if reasons else '')+
+            stats+
+            (h2('Confirmed leakage')+'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">'+conf_rows+'</table>'+
+             ('<div style="'+font+'font-size:12px;color:'+slate+';margin-top:6px">and '+str(more)+' more on the page.</div>' if more > 0 else '') if conf_rows else '')+
+            (h2('Needs your call')+'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">'+pot_rows+'</table>' if pot_rows else '')+
+            '<table role="presentation" cellpadding="0" cellspacing="0" style="margin:28px 0 8px"><tr><td style="background:'+blue+';border-radius:2px">'
+            '<a href="'+esc(url)+'" style="display:inline-block;padding:13px 22px;'+font+'font-size:15px;font-weight:600;color:#ffffff;text-decoration:none">Open the leakage page</a></td></tr></table>')
+    return ('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+            '<body style="margin:0;padding:0;background:'+wash+'"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:'+wash+'"><tr><td align="center" style="padding:24px 12px">'
+            '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;background:#ffffff;border:1px solid '+line+'">'
+            '<tr><td style="background:'+navy+';padding:18px 24px;'+font+'font-size:16px;font-weight:700;color:#ffffff">Sattva Global Logistics <span style="'+mono+'font-size:11px;font-weight:400;letter-spacing:.12em;color:#5cb6f9">&nbsp;BOOKS</span></td></tr>'
+            '<tr><td style="padding:24px">'+body+'</td></tr>'
+            '<tr><td style="padding:14px 24px;border-top:1px solid '+line+';'+font+'font-size:11px;color:'+slate+'">Reads Zoho, never writes to it. Amounts are pre-GST INR at each document’s exchange rate.</td></tr>'
+            '</table></td></tr></table></body></html>')
 
 
 # ============================================================== rendering

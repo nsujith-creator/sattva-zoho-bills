@@ -34,6 +34,8 @@ TOKEN_URL = 'https://accounts.zoho.in/oauth/v2/token'
 ENDPOINT = re.compile(r'(?:bills|invoices|creditnotes)(?:/[0-9]+)?')
 FY_START = '2026-04-01'
 LEAK_DAYS = 7
+# A vendor bill dated within this many days after the invoice is ordinary paperwork lag, not a late cost.
+LATE_GRACE_DAYS = 14
 TOLERANCE = Decimal('1.00')  # INR; absorbs paise from exchange-rate products only
 SINGULAR = {'bills': 'bill', 'invoices': 'invoice', 'creditnotes': 'creditnote'}
 ID_FIELD = {'bills': 'bill_id', 'invoices': 'invoice_id', 'creditnotes': 'creditnote_id'}
@@ -659,8 +661,13 @@ def reconcile(evidence, today, decisions=None, incomplete_reasons=(), since=FY_S
                 stale = [l for l in losses if l.get('shipment_keys') and set(l['shipment_keys']) & keys]
                 issue(potential, 'billed below cost', shortfall,
                       'Revenue '+q(revenue)+' < cost '+q(cost)+'.'+(' Earlier accepted-loss decision re-opened: records changed.' if stale else ''), **common)
-        elif late_aged:
-            issue(potential, 'late cost while margin still positive', late_cost, 'Vendor cost dated after the last invoice; margin remains positive.', **common)
+        else:
+            # Margin is positive, so nothing is lost; only a bill well after the invoice suggests a cost that was never re-billed.
+            grace_end = str(date.fromisoformat(last_invoice[:10])+timedelta(days=LATE_GRACE_DAYS))
+            very_late = [b for b in late_aged if str(b.get('date')) > grace_end]
+            if very_late:
+                issue(potential, 'late cost while margin still positive', sum((bill_cost(b) for b in very_late), Decimal(0)),
+                      'Vendor cost dated more than '+str(LATE_GRACE_DAYS)+' days after the last invoice ('+last_invoice+'); margin remains positive.', **common)
 
         vendor_paid = sum((bill_gross_cost(b)*cash_paid_fraction(b) for b in sbills), Decimal(0))
         # A credit note applied to an invoice clears its balance but is not cash from the customer.

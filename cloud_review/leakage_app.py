@@ -51,7 +51,7 @@ PLAIN = {
     'uncertain near match': 'Possible match — confirm',
     'draft invoice only': 'Invoice still in draft',
     'billed below cost': 'Billed below cost',
-    'late cost while margin still positive': 'Later cost, still in margin',
+    'late cost while margin still positive': 'Cost booked 14+ days after invoice, still in margin',
     'overdue receivable (vendor not yet paid)': 'Customer overdue',
     'unused vendor credit (vendor owes us)': 'Unapplied credit with vendor',
     'invoice with no vendor cost recorded': 'Invoice with no vendor cost',
@@ -91,7 +91,7 @@ WHY = {
     'overdue receivable (vendor not yet paid)': 'Customer late; you have not paid the vendor yet either.',
     'invoice with no vendor cost recorded': 'Billed, but no carrier bill booked in Zoho.',
     'no or weak shipment key': 'Mark overhead, link an invoice, or write off.',
-    'late cost while margin still positive': 'Vendor bill came after the invoice; still profitable.',
+    'late cost while margin still positive': 'Vendor bill dated over 14 days after the invoice; still profitable. Check it was re-billed.',
     'books: receivable settled per owner, still open in Zoho': 'Settled per you; Zoho still shows it open.',
     'possible re-issued vendor bill booked twice': 'Same lines, different bill numbers.',
     'possible duplicate vendor bill': 'Same vendor and bill number twice.',
@@ -434,6 +434,8 @@ h1 .money{color:#ff6b5e}h1 .calm{color:#7fd3a8}
 .records .mono{font-family:var(--mono)}.scroll{overflow-x:auto}
 .detail{margin:14px 0 0;color:var(--slate);font-size:14px}
 .fix{margin:16px 0 0;padding:12px 14px;border-left:3px solid var(--electric);background:var(--pale);font-size:14px}
+.fixlinks{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:8px}
+a.zoho{color:var(--blue);font-weight:600;white-space:nowrap;text-decoration:none;border-bottom:1px solid var(--line)}a.zoho:hover{border-bottom-color:var(--blue)}
 .decide{margin-top:18px;display:grid;gap:12px}
 .decide fieldset{border:1px solid var(--line);background:#fff;padding:16px;margin:0}
 .decide legend{font:500 11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--slate);padding:0 6px}
@@ -497,13 +499,24 @@ def gap_bar(item, confirmed):
     return '<div class="gap" aria-label="'+esc(text)+'">'+bar+'<p>'+esc(text)+'</p></div>'
 
 
-def records_table(item):
+ZOHO_WEB = 'https://books.zoho.in/app/'
+
+
+def zoho_link(org, kind, record_id, text):
+    """A link that opens the record in Zoho Books (India). Plain text when the organisation or id is unknown."""
+    rid = str(record_id or '')
+    if not (str(org or '').isdigit() and rid.isdigit()):
+        return esc(text)
+    return '<a class="zoho" href="'+esc(ZOHO_WEB+str(org)+'#/'+kind+'/'+rid)+'" target="_blank" rel="noopener noreferrer">'+esc(text)+' ↗</a>'
+
+
+def records_table(item, org=''):
     rows = []
     for b in item.get('bills', []):
-        rows.append('<tr><td>Vendor bill</td><td class="mono">'+esc(b.get('bill_number'))+'</td><td>'+esc(b.get('vendor'))+'</td><td>'+esc(b.get('date'))+
+        rows.append('<tr><td>Vendor bill</td><td class="mono">'+zoho_link(org, 'bills', b.get('bill_id'), b.get('bill_number') or 'open')+'</td><td>'+esc(b.get('vendor'))+'</td><td>'+esc(b.get('date'))+
                     '</td><td class="num">₹'+esc(inr(b.get('cost_inr'), True))+'</td><td class="num">'+esc(inr(b.get('balance') or 0, True))+'</td><td>'+esc(b.get('status'))+'</td></tr>')
     for i in item.get('invoices', []):
-        rows.append('<tr><td>Sales invoice</td><td class="mono">'+esc(i.get('invoice_number'))+'</td><td>'+esc(i.get('customer'))+'</td><td>'+esc(i.get('date'))+
+        rows.append('<tr><td>Sales invoice</td><td class="mono">'+zoho_link(org, 'invoices', i.get('invoice_id'), i.get('invoice_number') or 'open')+'</td><td>'+esc(i.get('customer'))+'</td><td>'+esc(i.get('date'))+
                     '</td><td class="num">₹'+esc(inr(i.get('revenue_inr'), True))+'</td><td class="num">'+esc(inr(i.get('balance') or 0, True))+'</td><td>'+esc(i.get('status'))+'</td></tr>')
     if not rows:
         return ''
@@ -511,10 +524,21 @@ def records_table(item):
             '<th style="text-align:right">Pre-GST INR</th><th style="text-align:right">Balance</th><th>Status</th></tr></thead><tbody>'+''.join(rows)+'</tbody></table></div>')
 
 
-def decision_forms(item, csrf):
+def fix_links(item, org):
+    links = []
+    if item['type'] == 'unused vendor credit (vendor owes us)':
+        vid = (item.get('bills') or [{}])[0].get('vendor_id')
+        links.append(zoho_link(org, 'contacts', vid, 'Open vendor in Zoho'))
+    links += [zoho_link(org, 'bills', b.get('bill_id'), 'Bill '+str(b.get('bill_number') or '')) for b in item.get('bills', [])[:3]]
+    links += [zoho_link(org, 'invoices', i.get('invoice_id'), 'Invoice '+str(i.get('invoice_number') or '')) for i in item.get('invoices', [])[:3]]
+    links = [l for l in links if l.startswith('<a')]
+    return ('<span class="fixlinks">'+' '.join(links)+'</span>') if links else ''
+
+
+def decision_forms(item, csrf, org=''):
     actions = ACTIONS.get(item['type'], ())
     if not actions:
-        return '<p class="fix">'+esc(FIX_IN_ZOHO.get(item['type'], 'Review this in Zoho.'))+'</p>' if item['type'] in FIX_IN_ZOHO else ''
+        return ('<p class="fix">'+esc(FIX_IN_ZOHO[item['type']])+fix_links(item, org)+'</p>') if item['type'] in FIX_IN_ZOHO else ''
     bill_ids = ','.join(b['bill_id'] for b in item.get('bills', []))
     open_inv = ','.join(i['invoice_id'] for i in item.get('invoices', []) if Decimal(str(i.get('balance') or 0)) > 0)
     keys = ','.join(item.get('shipment_keys', []))
@@ -551,7 +575,7 @@ def decision_forms(item, csrf):
     return '<div class="decide">'+''.join(out)+'</div>' if out else ''
 
 
-def ledger_row(n, item, csrf, confirmed=False):
+def ledger_row(n, item, csrf, confirmed=False, org=''):
     keys = ' · '.join(item.get('shipment_keys', [])) or 'No shipment key'
     parties = sorted({b.get('vendor') for b in item.get('bills', []) if b.get('vendor')}) + \
               sorted({i.get('customer') for i in item.get('invoices', []) if i.get('customer')})
@@ -560,14 +584,14 @@ def ledger_row(n, item, csrf, confirmed=False):
     amt = Decimal(item.get('exposure_inr') or 0)
     amount = ('₹'+inr(amt)) if amt else '—'
     label = 'at risk' if confirmed else ('exposure' if amt else '')
-    body = ('<div class="body">'+records_table(item)+'<p class="detail">'+esc(item.get('detail'))+'</p>'+
-            ''.join('<p class="detail">⚑ '+esc(f)+'</p>' for f in item.get('flags', []))+decision_forms(item, csrf)+'</div>')
+    body = ('<div class="body">'+records_table(item, org)+'<p class="detail">'+esc(item.get('detail'))+'</p>'+
+            ''.join('<p class="detail">⚑ '+esc(f)+'</p>' for f in item.get('flags', []))+decision_forms(item, csrf, org)+'</div>')
     return ('<li><details><summary><span class="n">'+'%02d' % n+'</span><span><span class="what">'+esc(PLAIN.get(item['type'], item['type']))+'</span>'
             '<span class="keys" style="display:block">'+esc(keys)+'</span>'+('<span class="who" style="display:block">'+esc(who)+'</span>' if who else '')+
             gap_bar(item, confirmed)+'</span><span class="amt">'+esc(amount)+('<small>'+label+'</small>' if label else '')+'</span></summary>'+body+'</details></li>')
 
 
-def page(report, started_at, email_status, runs, decisions, csrf, running=False, flash='', flash_bad=False, enabled=True, daily_hour=8):
+def page(report, started_at, email_status, runs, decisions, csrf, running=False, flash='', flash_bad=False, enabled=True, daily_hour=8, zoho_org=''):
     head = ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>Leakage · Sattva Books</title><style>'+CSS+'</style></head><body>'+books_header('leakage'))
     flash_html = ('<p class="flash'+(' bad' if flash_bad else '')+'" role="status">'+esc(flash)+'</p>') if flash else ''
@@ -616,7 +640,7 @@ def page(report, started_at, email_status, runs, decisions, csrf, running=False,
              '<div><b>₹'+esc(inr(t['accepted_losses']))+'</b><span>accepted or written off</span></div>'
              '<div><b>₹'+esc(inr(t['excluded_overhead']))+'</b><span>overhead, excluded</span></div></section>')
 
-    conf_list = ''.join(ledger_row(n, it, csrf, True) for n, it in enumerate(confirmed, 1)) or ''
+    conf_list = ''.join(ledger_row(n, it, csrf, True, zoho_org) for n, it in enumerate(confirmed, 1)) or ''
     conf_html = ('<ol class="ledger confirmed">'+conf_list+'</ol>') if conf_list else \
         '<p class="empty">'+('No confirmed leakage in this check.' if complete else 'Nothing confirmed — but this check is incomplete.')+'</p>'
     sec_conf = ('<section class="section" id="confirmed"><div class="aside"><div class="eyebrow">Confirmed leakage</div><h2>Money that left and has not come back.</h2>'
@@ -634,7 +658,7 @@ def page(report, started_at, email_status, runs, decisions, csrf, running=False,
         rows = ''
         for it in items:
             n += 1
-            rows += ledger_row(n, it, csrf)
+            rows += ledger_row(n, it, csrf, org=zoho_org)
         total = sum(Decimal(i['exposure_inr']) for i in items)
         why = WHY.get(kind, '')
         pot_html += ('<details class="bucket"><summary><span class="bname">'+esc(PLAIN.get(kind, kind))+'<small>'+esc(why)+'</small></span>'
@@ -644,7 +668,7 @@ def page(report, started_at, email_status, runs, decisions, csrf, running=False,
                '<p>Each group says what is uncertain. Decide here with a reason, or fix the record in Zoho and the next check picks it up.</p></div><div>'+
                (pot_html or '<p class="empty">Nothing waiting on you.</p>')+'</div></section>')
 
-    acc_rows = ''.join(ledger_row(i, it, csrf) for i, it in enumerate(accepted, 1))
+    acc_rows = ''.join(ledger_row(i, it, csrf, org=zoho_org) for i, it in enumerate(accepted, 1))
     dec_rows = ''
     for did, kind, payload, reason, created in decisions:
         p = json.loads(payload)

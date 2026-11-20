@@ -259,6 +259,15 @@ class Cases(unittest.TestCase):
         self.assertEqual(types(r, 'confirmed_leakage'), ['LATE COST NOT RE-BILLED'])
         self.assertEqual(r['confirmed_leakage'][0]['exposure_inr'], '3000.00')  # min(5000 late, 3000 shortfall)
 
+    def test_late_cost_with_margin_ignores_paperwork_lag(self):
+        def run(bill_date):
+            b2 = bill('2', vendor='CFS', d=bill_date, amount='1000', lines=[{'description': 'CFS', 'item_total': '1000'}], ref='MBL: OOLU2712345678')
+            return L.reconcile(evidence([bill('1', d='2026-09-01'), b2], [invoice('9', amount='20000', d='2026-09-02')]), TODAY)
+        self.assertEqual(run('2026-09-16')['potential_issues'], [])  # 14 days after the invoice: lag
+        r = run('2026-09-17')  # 15 days after
+        self.assertEqual(types(r, 'potential_issues'), ['late cost while margin still positive'])
+        self.assertEqual(r['potential_issues'][0]['exposure_inr'], '1000.00')
+
     def test_below_cost_without_late_cost_needs_owner(self):
         r = L.reconcile(evidence([bill('1', d='2026-10-05')], [invoice('9', amount='9000', d='2026-10-06')]), TODAY)
         self.assertEqual(types(r, 'potential_issues'), ['billed below cost'])

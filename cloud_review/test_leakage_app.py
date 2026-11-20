@@ -130,6 +130,18 @@ class PageTests(unittest.TestCase):
         self.assertIn('&lt;script&gt;', out)
         self.assertIn('is leaking across 1 shipment.', out)
 
+    def test_records_link_to_zoho_only_with_numeric_ids(self):
+        with tempfile.TemporaryDirectory() as d:
+            m = monitor(d, evidence([bill('4600000123', d='2026-10-01')]))
+            m.run('manual')
+            report, started, email = m.latest_report()
+            out = A.page(report, started, email, m.runs(), m.decision_rows(), 'c', zoho_org='60012345')
+            bare = A.page(report, started, email, m.runs(), m.decision_rows(), 'c')
+        self.assertIn('href="https://books.zoho.in/app/60012345#/bills/4600000123"', out)
+        self.assertIn('rel="noopener noreferrer"', out)
+        self.assertNotIn('books.zoho.in', bare)
+        self.assertEqual(A.zoho_link('60012345', 'bills', '1"><script>', 'x'), 'x')
+
     def test_incomplete_is_never_presented_as_clean(self):
         report = A.Monitor._failed_report(datetime(2026, 11, 20, tzinfo=IST), 'Zoho HTTP 503')
         out = A.page(report, '2026-11-20T08:00:00+05:30', 'not configured', [], [], 'c')

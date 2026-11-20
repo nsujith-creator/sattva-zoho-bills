@@ -321,7 +321,8 @@ main{{max-width:460px;margin:clamp(30px,9vh,96px) auto;padding:0 18px;width:100%
         else:
             report, started, email_status = monitor.latest_report()
             body = leakage_app.page(report, started, email_status, monitor.runs(), monitor.decision_rows(), self.session['csrf'],
-                                    running=monitor.running(), flash=message, flash_bad=bad, daily_hour=monitor.daily_hour())
+                                    running=monitor.running(), flash=message, flash_bad=bad, daily_hour=monitor.daily_hour(),
+                                    zoho_org=monitor.env.get('ZOHO_ORGANIZATION_ID', ''))
         self.reply(code, body.encode(), 'text/html; charset=utf-8')
 
     def leakage_post(self, path):

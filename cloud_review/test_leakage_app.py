@@ -215,3 +215,20 @@ class RouteTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ReleasePinCoverage(unittest.TestCase):
+    def test_every_python_module_in_the_image_is_pinned(self):
+        import owner_start
+        root = Path(__file__).resolve().parents[1]
+        shipped = set()
+        for line in (root/'cloud_review'/'Dockerfile').read_text().splitlines():
+            if line.startswith('COPY '):
+                *sources, target = line.split()[1:]
+                for src in sources:
+                    if src.endswith('.py'):
+                        shipped.add(target.rsplit('/', 1)[1] if not target.endswith('/') else src.rsplit('/', 1)[1])
+        self.assertEqual(shipped, owner_start.SOURCE_NAMES, 'startup manifest must cover every Python file in /app')
+        pin = (root/'tools'/'release_pin.py').read_text()
+        for name in shipped - {'zoho_core.py'}:
+            self.assertIn("'"+name+"'", pin, name+' missing from tools/release_pin.py')

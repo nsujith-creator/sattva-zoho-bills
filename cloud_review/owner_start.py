@@ -17,7 +17,8 @@ from datetime import datetime, timezone
 import container_start
 
 SOURCE_NAMES = {'app.py', 'review.py', 'extraction.py', 'auth.py',
-                'container_start.py', 'automation.py', 'zoho_core.py', 'owner_start.py'}
+                'container_start.py', 'automation.py', 'zoho_core.py', 'owner_start.py',
+                'leakage.py', 'leakage_app.py'}  # app.py imports leakage_app, which imports leakage
 RETAINED = ('review.sqlite3', 'pre-r10-acceptance.sqlite3', 'acceptance-r10-backup.sqlite3')
 
 
